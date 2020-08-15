@@ -1,0 +1,34 @@
+FROM debian:9
+
+WORKDIR /src/fastfreeze
+
+# Few essential things before we can get going
+RUN apt-get update
+RUN apt-get install -y build-essential pkg-config sudo curl git python3
+
+# Build dependencies (CRIU, rust toolchain, libvirtcpuid, etc.)
+COPY deps deps
+RUN make -C deps clean && make -C deps -j4
+ENV CARGO=/root/.cargo/bin/cargo
+
+# Build FastFreeze Rust dependencies
+# This enables fast image rebuild when making code modification
+COPY Cargo.lock .
+COPY Cargo.toml .
+RUN set -ex; \
+  mkdir src; \
+  echo "" > src/lib.rs; \
+  echo "fn main() {}" > src/main.rs; \
+  $CARGO test; \
+  $CARGO build --release;
+
+# Build FastFreeze
+COPY src src
+RUN touch src/lib.rs src/main.rs
+RUN $CARGO test
+RUN $CARGO build --release
+
+# Package FastFreeze
+COPY Makefile .
+COPY scripts/fastfreeze_wrapper.sh .
+RUN make

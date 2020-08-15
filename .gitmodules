@@ -1,0 +1,15 @@
+[submodule "deps/criu-image-streamer"]
+	path = deps/criu-image-streamer
+	url = https://github.com/twosigma/criu-image-streamer.git
+[submodule "deps/libvirttime"]
+	path = deps/libvirttime
+	url = https://github.com/twosigma/libvirttime.git
+[submodule "deps/libvirtcpuid"]
+	path = deps/libvirtcpuid
+	url = https://github.com/twosigma/libvirtcpuid.git
+[submodule "deps/criu"]
+	path = deps/criu
+	url = https://github.com/twosigma/criu
+[submodule "deps/set_ns_last_pid"]
+	path = deps/set_ns_last_pid
+	url = https://github.com/twosigma/set_ns_last_pid.git
