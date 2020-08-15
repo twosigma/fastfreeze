@@ -1,0 +1,16 @@
+FROM debian:9
+
+RUN apt-get update
+RUN apt-get install -y xz-utils libcap2-bin
+
+#RUN apt-get install -y strace procps elfutils gdb binutils vim patchelf
+
+COPY fastfreeze.tar.xz /tmp
+
+RUN set -ex; \
+  tar xf /tmp/fastfreeze.tar.xz -C /opt; \
+  ln -s /opt/fastfreeze/fastfreeze_wrapper.sh /usr/local/bin/fastfreeze; \
+  fastfreeze install; \
+  setcap cap_sys_ptrace+eip /opt/fastfreeze/criu
+
+WORKDIR /opt/fastfreeze
