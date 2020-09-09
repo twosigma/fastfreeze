@@ -60,6 +60,7 @@ ENVS:
     CRIU_OPTS                   Additional arguments to pass to CRIU, whitespace separated
     S3_CMD                      Command to access AWS S3. Defaults to 'aws s3'
     GS_CMD                      Command to access Google Storage. Defaults to 'gsutil'
+    TAR_CMD                     Command to untar the file system. Defaults to 'tar'
 
 EXIT CODES:
     171          A failure happened during restore, or while fetching the image manifest.

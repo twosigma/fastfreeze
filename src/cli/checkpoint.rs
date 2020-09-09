@@ -50,7 +50,8 @@ ENVS:
                                 The metrics are formatted in JSON and passed as first argument
     CRIU_OPTS                   Additional arguments to pass to CRIU, whitespace separated
     S3_CMD                      Command to access AWS S3. Defaults to 'aws s3'
-    GS_CMD                      Command to access Google Storage. Defaults to 'gsutil'"
+    GS_CMD                      Command to access Google Storage. Defaults to 'gsutil'
+    TAR_CMD                     Command to tar the file system. Defaults to 'tar'"
 ))]
 pub struct Checkpoint {
     /// Image URL, defaults to the value used during the run command

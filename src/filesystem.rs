@@ -24,8 +24,13 @@ use crate::{
     process::{Command, Process, Stdio},
 };
 
+lazy_static! {
+    static ref TAR_CMD: String = std::env::var("TAR_CMD")
+        .unwrap_or_else(|_| "tar".to_string());
+}
+
 pub fn spawn_tar(preserved_paths: HashSet<PathBuf>, stdout: fs::File) -> Result<Process> {
-    let mut cmd = Command::new(&["tar"]);
+    let mut cmd = Command::new(&[&*TAR_CMD]);
     if log_enabled!(log::Level::Trace) {
         cmd.arg("--verbose");
     }
@@ -45,7 +50,7 @@ pub fn spawn_tar(preserved_paths: HashSet<PathBuf>, stdout: fs::File) -> Result<
 }
 
 pub fn spawn_untar(stdin: fs::File) -> Result<Process> {
-    let mut cmd = Command::new(&["tar"]);
+    let mut cmd = Command::new(&[&*TAR_CMD]);
     if log_enabled!(log::Level::Trace) {
         cmd.arg("--verbose");
     }
