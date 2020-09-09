@@ -51,7 +51,6 @@ impl super::File for File {
     fn upload_shell_cmd(&self) -> String {
         // TODO Allow lifecycle management options to be configured
         // https://cloud.google.com/storage/docs/managing-lifecycles
-        // XXX gsutil eats lots of memory. We should publish our GCS upload tool.
         format!("{} cp - \"{}\"", *GS_CMD, self.url)
     }
 

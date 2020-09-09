@@ -42,8 +42,14 @@ impl super::CLI for Install {
         create_dir_all(&*NO_PRESERVE_FF_DIR)?;
 
         // We give /tmp-like permissions to allow other users to write to the directory
-        fs::set_permissions(&*FF_DIR, Permissions::from_mode(0o1777))?;
-        fs::set_permissions(&*NO_PRESERVE_FF_DIR, Permissions::from_mode(0o1777))?;
+        // But this can fail. We can get an EPERM error if FF_DIR is volume-bind mounted for
+        // example. If chmod fails, that's fine, but fastfreeze can only be run as the user who
+        // installed fastfreeze.
+        if let Err(_) = fs::set_permissions(&*FF_DIR, Permissions::from_mode(0o1777))
+                   .and(fs::set_permissions(&*NO_PRESERVE_FF_DIR, Permissions::from_mode(0o1777))) {
+            warn!("Failed to chmod 1777 {}, but that's okay. The only restriction is to not \
+                   change uid when using fastfreeze", FF_DIR.display());
+        }
 
         let system_ld_real_path = LD_SYSTEM_PATH.read_link()
             .with_context(|| format!("Failed to read link {}", LD_SYSTEM_PATH.display()))?;
