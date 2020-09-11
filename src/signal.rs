@@ -52,7 +52,7 @@ impl Display for TerminationRequestedError {
 /// consumed, meaning that a subsequent call to `check_for_pending_sigterm()`
 /// will succeed unless another SIGTERM is received.
 pub fn check_for_pending_sigterm() -> Result<()> {
-    if SIGTERM_RECEIVED.fetch_and(false, Ordering::SeqCst) {
+    if SIGTERM_RECEIVED.swap(false, Ordering::SeqCst) {
         info!("Termination requested");
         bail!(TerminationRequestedError);
     }
