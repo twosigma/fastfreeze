@@ -19,6 +19,8 @@ mod wait;
 mod install;
 mod main;
 
+use crate::consts::*;
+
 pub trait CLI {
     fn run(self) -> anyhow::Result<()>;
 }
@@ -32,8 +34,10 @@ impl std::fmt::Display for ExitCode {
 }
 
 impl ExitCode {
-    pub fn from_error(e: &anyhow::Error) -> Option<u8> {
-        e.downcast_ref::<Self>().map(|exit_code| exit_code.0)
+    pub fn from_error(e: &anyhow::Error) -> u8 {
+        e.downcast_ref::<Self>()
+            .map(|exit_code| exit_code.0)
+            .unwrap_or(EXIT_CODE_FAILURE)
     }
 }
 

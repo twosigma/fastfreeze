@@ -55,9 +55,9 @@ pub fn emit_metrics(event: Value) -> Result<Option<Process>> {
     Ok(Some(p))
 }
 
-pub fn with_metrics<F,M,R>(action: &str, f: F, metrics_f: M) -> Result<R>
+pub fn with_metrics_raw<F,M,R>(action: &str, f: F, metrics_f: M) -> Result<R>
     where F: FnOnce() -> Result<R>,
-          M: Fn(&R) -> Value
+          M: Fn(&Result<R>) -> Value
 {
     if METRICS_RECORDER_PATH.is_none() {
         return f();
@@ -68,19 +68,28 @@ pub fn with_metrics<F,M,R>(action: &str, f: F, metrics_f: M) -> Result<R>
     let event = json!({
         "action": action,
         "duration": start_time.elapsed().as_secs_f64(),
-    }).merge(match &result {
-        Ok(result) => json!({
-            "outcome": "success",
-        }).merge(metrics_f(result)),
-        Err(e) => json!({
-            "outcome": "error",
-            "msg": e.to_string(),
-        }),
-    });
+    }).merge(metrics_f(&result));
 
     // If the metrics CLI fails, we don't return the error to the caller.
     // Instead, we log the error and move on.
     emit_metrics(event)?.map(|p| p.reap_on_drop());
 
     result
+}
+
+pub fn with_metrics<F,M,R>(action: &str, f: F, metrics_f: M) -> Result<R>
+    where F: FnOnce() -> Result<R>,
+          M: Fn(&R) -> Value
+{
+    with_metrics_raw(action, f, |result|
+        match result {
+            Ok(result) => json!({
+                "outcome": "success",
+            }).merge(metrics_f(result)),
+            Err(e) => json!({
+                "outcome": "error",
+                "msg": e.to_string(),
+            }),
+        }
+    )
 }

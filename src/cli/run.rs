@@ -35,7 +35,7 @@ use crate::{
     image::{ManifestFetchResult, ImageManifest, shard},
     process::{Command, CommandPidExt, ProcessExt, ProcessGroup, Stdio,
               spawn_set_ns_last_pid_server, set_ns_last_pid, MIN_PID},
-    metrics::with_metrics,
+    metrics::{with_metrics, with_metrics_raw},
     filesystem::spawn_untar,
     image_streamer::{Stats, ImageStreamer},
     lock::with_checkpoint_restore_lock,
@@ -364,6 +364,19 @@ fn ensure_non_conflicting_pid() -> Result<()> {
 
 impl super::CLI for Run {
     fn run(self) -> Result<()> {
+        // We use `with_metrics` to log the exit_code of the application and run time duration
+        with_metrics_raw("run", || self._run(), |result|
+            match result {
+                Ok(()) => json!({"exit_code": 0}),
+                Err(e) => json!({"exit_code": ExitCode::from_error(&e),
+                                 "msg": e.to_string()}),
+            }
+        )
+    }
+}
+
+impl Run {
+    fn _run(self) -> Result<()> {
         let Self {
             image_url, app_args, on_app_ready_cmd, no_restore,
             allow_bad_image_version, preserved_paths, leave_stopped, verbose: _,

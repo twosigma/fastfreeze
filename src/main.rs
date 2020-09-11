@@ -66,7 +66,7 @@ fn main() {
 
     if let Err(e) = do_main() {
         log::error!("{:#}", e);
-        let exit_code = ExitCode::from_error(&e).unwrap_or(EXIT_CODE_FAILURE);
+        let exit_code = ExitCode::from_error(&e);
         std::process::exit(exit_code as i32);
     }
 }
