@@ -108,20 +108,25 @@ impl ProcessGroup {
     pub fn try_wait_for_success(&mut self) -> Result<bool> {
         self.drain_sigchld_pipe();
 
-        // partition() doesn't work well due to try_wait() mutablity and result.
-        let mut completed = Vec::new();
-        let mut running = Vec::new();
-        for mut child in self.children.drain(..) {
-            if child.inner.try_wait()?.is_some() {
-                completed.push(child);
+        // We join the error messages of all errored children.
+        // This is useful when running pipe-connected processes like
+        // "A | B" where both processes are dependent on the other.
+        // When one dies, the other dies too. But we don't know which
+        // one died first. So we report both errors.
+        let mut errors = Vec::new();
+        let children = std::mem::replace(&mut self.children, Vec::new());
+        for mut child in children {
+            if child.inner.try_wait()?.is_some() { // has child exited ?
+                if let Err(err) = child.inner.wait_for_success() { // has child errored ?
+                    errors.push(err.to_string());
+                }
             } else {
-                running.push(child);
+                self.children.push(child);
             }
         }
-        self.children = running;
 
-        for mut child in completed {
-            child.inner.wait_for_success()?;
+        if !errors.is_empty() {
+           bail!(errors.join(", "));
         }
 
         Ok(self.children.iter().any(|c| !c.daemon))
@@ -241,6 +246,32 @@ mod test {
             .to_string();
 
         dbg!(&err_msg);
+        assert!(err_msg.contains("false"));
+        assert!(err_msg.contains("exit_code=1"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_exit_fail_multiple() -> Result<()> {
+        let mut cmd1 = Command::new(&["bash", "-c", "exit 2"]).spawn()?;
+        let mut cmd2 = Command::new(&["false"]).spawn()?;
+        let cmd3 = Command::new(&["sleep"]).arg("1000").spawn()?;
+
+        cmd1.wait()?;
+        cmd2.wait()?;
+
+        let err_msg = new_process_group()?
+            .add(cmd1)
+            .add(cmd2)
+            .add(cmd3)
+            .wait_for_success()
+            .unwrap_err()
+            .to_string();
+
+        dbg!(&err_msg);
+        assert!(err_msg.contains("bash"));
+        assert!(err_msg.contains("exit_code=2"));
         assert!(err_msg.contains("false"));
         assert!(err_msg.contains("exit_code=1"));
 
