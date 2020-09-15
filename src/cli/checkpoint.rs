@@ -17,7 +17,7 @@ use std::{
     os::unix::io::AsRawFd,
     collections::HashSet,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{SystemTime, Duration},
 };
 use nix::{
     poll::{PollFd, PollFlags},
@@ -191,10 +191,17 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         ensure!(app_clock >= 0, "Computed app clock is negative: {}ns", app_clock);
         debug!("App clock: {:.1}s", Duration::from_nanos(app_clock as u64).as_secs_f64());
 
-        let image_url = image_url.to_string();
-        let preserved_paths = preserved_paths.clone();
-
-        let config = AppConfig { image_url, preserved_paths, app_clock };
+        let config = AppConfig {
+            image_url: image_url.to_string(),
+            preserved_paths: preserved_paths.clone(),
+            app_clock,
+            // Ideally, we want the clock time once the checkpoint has ended,
+            // but that would be a bit difficult. We could though.
+            // It would involve adding the config.json as an external file
+            // into to the streamer (like fs.tar), and stream it at the very end.
+            // For now, we have the time at which the checkpoint started.
+            created_at: SystemTime::now(),
+        };
         config.save()?;
     }
 

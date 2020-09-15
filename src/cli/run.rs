@@ -14,7 +14,7 @@
 
 use anyhow::{Result, Context};
 use std::{
-    time::Duration,
+    time::{SystemTime, Duration},
     ffi::OsString,
     path::PathBuf,
     fs, collections::HashSet
@@ -122,17 +122,17 @@ pub struct Run {
     detach: bool,
 }
 
-
 /// `AppConfig` is created during the run command, and updated during checkpoint.
 /// These settings are saved under `APP_CONFIG_PATH`.
 /// It's useful for the checkpoint command to know the image_url and preserved_paths.
 /// During restore, it is useful to read the app_clock.
-
 #[derive(Serialize, Deserialize)]
 pub struct AppConfig {
     pub image_url: String,
     pub preserved_paths: HashSet<PathBuf>,
     pub app_clock: Nanos,
+    // Used to compute the duration between a restore and a checkpoint, for metrics only.
+    pub created_at: SystemTime,
 }
 
 impl AppConfig {
@@ -150,12 +150,14 @@ impl AppConfig {
 }
 
 
+// It returns Stats, that's the transfer speeds and all given by criu-image-streamer,
+// And the number of seconds since the checkpoint happened. This is helpful for emmitting metrics.
 fn restore(
     image_url: String,
-    preserved_paths: HashSet<PathBuf>,
+    mut preserved_paths: HashSet<PathBuf>,
     shard_download_cmds: Vec<String>,
     leave_stopped: bool,
-) -> Result<Stats> {
+) -> Result<(Stats, u64)> {
     info!("Restoring application{}", if leave_stopped { " (leave stopped)" } else { "" });
     let mut pgrp = ProcessGroup::new()?;
 
@@ -179,15 +181,35 @@ fn restore(
     // preserved-paths, and application time offset.
     // We load the app config, add the new preserved_paths, and save it. It will be useful for the
     // subsequent checkpoint.
-    let mut config = AppConfig::restore()?;
-    config.image_url = image_url;
-    config.preserved_paths.extend(preserved_paths);
-    config.save()?;
+    let secs_since_checkpoint = {
+        let old_config = AppConfig::restore()?;
+        preserved_paths.extend(old_config.preserved_paths);
 
-    // Adjust the libtimevirt offsets
-    debug!("Application clock: {:.1}s",
-           Duration::from_nanos(config.app_clock as u64).as_secs_f64());
-    virt::time::ConfigPath::default().adjust_timespecs(config.app_clock)?;
+        let config = AppConfig {
+            image_url,
+            preserved_paths,
+            created_at: SystemTime::now(),
+            app_clock: old_config.app_clock,
+        };
+        config.save()?;
+
+        // old_config.created contains the date when checkpoint happened.
+        // It is a wall clock time coming from another machine.
+        // The duration between restore and checkpoint can therefore be inaccurate, and negative.
+        // we'll clamp these negative values to 0.
+        let restore_started_at = SystemTime::now() - START_TIME.elapsed();
+        let secs_since_checkpoint = restore_started_at.duration_since(old_config.created_at)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        debug!("Duration between restore and checkpoint: {}s", secs_since_checkpoint);
+
+        // Adjust the libtimevirt offsets
+        debug!("Application clock: {:.1}s",
+            Duration::from_nanos(old_config.app_clock as u64).as_secs_f64());
+        virt::time::ConfigPath::default().adjust_timespecs(old_config.app_clock)?;
+
+        secs_since_checkpoint
+    };
 
     // We start the ns_last_pid daemon here. Note that we join_as_daemon() instead of join(),
     // this is so we don't wait for it in wait_for_success().
@@ -231,7 +253,7 @@ fn restore(
 
     info!("Application is ready, restore took {:.1}s", START_TIME.elapsed().as_secs_f64());
 
-    Ok(stats)
+    Ok((stats, secs_since_checkpoint))
 }
 
 /// `monitor_app()` assumes the init role. We do the following:
@@ -298,6 +320,7 @@ fn run_from_scratch(
         image_url,
         preserved_paths,
         app_clock: 0,
+        created_at: SystemTime::now(),
     };
     config.save()?;
 
@@ -422,7 +445,9 @@ impl Run {
                     with_metrics("restore", ||
                         restore(image_url, preserved_paths, shard_download_cmds, leave_stopped)
                             .context(ExitCode(EXIT_CODE_RESTORE_FAILURE)),
-                        |stats| json!({"stats": stats}))?;
+                        |(stats, secs_since_checkpoint)|
+                            json!({"stats": stats, "secs_since_checkpoint": secs_since_checkpoint})
+                        )?;
                 }
                 RunMode::FromScratch => {
                     let app_args = app_args.into_iter().map(|s| s.into()).collect();
