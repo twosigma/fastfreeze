@@ -197,11 +197,21 @@ fn restore(
 
     debug!("Continuing reading image in memory...");
 
-    let stats = img_streamer.progress.wait_for_stats()?;
+    // `check_pgrp_err()` is useful to report the process group error,
+    // which is a more interesting error to report than the error of wait_for_stats(),
+    // (which would typically be a pipe read error)
+    let mut check_pgrp_err = |err| {
+        if let Err(e) = pgrp.try_wait_for_success() { e }
+        else { err }
+    };
+
+    let stats = img_streamer.progress.wait_for_stats()
+        .map_err(&mut check_pgrp_err)?;
     stats.show();
 
-    // Wait for the imager to be ready.
-    img_streamer.progress.wait_for_socket_init()?;
+    // Wait for the CRIU socket to be ready.
+    img_streamer.progress.wait_for_socket_init()
+        .map_err(&mut check_pgrp_err)?;
 
     // Restore processes. We become the parent of the application as CRIU
     // is configured to use CLONE_PARENT.
