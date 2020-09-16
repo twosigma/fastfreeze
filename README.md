@@ -430,6 +430,7 @@ OPTIONS:
 
 ## Acknowledgments
 * Author: Nicolas Viennot [@nviennot](https://github.com/nviennot)
+* Tester: Hung Tan Tran [@hungtantran](https://github.com/hungtantran)
 * Reviewer: Peter Burka [@pburka](https://github.com/pburka)
 * Developed as a [Two Sigma Open Source](https://opensource.twosigma.com) initiative
 
