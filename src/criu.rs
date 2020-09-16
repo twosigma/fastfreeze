@@ -12,16 +12,15 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-use anyhow::Result;
 use crate::{
     consts::*,
-    process::{Command, Process},
+    process::Command,
 };
 
 // CRIU is running under our CPUID virtualization.
 // The CPUID that it detects is virtualized.
 
-pub fn spawn_dump() -> Result<Process> {
+pub fn criu_dump_cmd() -> Command {
     let mut cmd = Command::new(&[
         "criu", "dump",
         "--tree", &APP_ROOT_PID.to_string(),
@@ -31,12 +30,12 @@ pub fn spawn_dump() -> Result<Process> {
         "--empty-ns", "net", "--tcp-established", "--skip-in-flight", "--tcp-close", "--ext-unix-sk"
     ]);
 
-    add_common_criu_opts(&mut cmd)?;
+    add_common_criu_opts(&mut cmd);
 
-    cmd.spawn()
+    cmd
 }
 
-pub fn spawn_restore(leave_stopped: bool) -> Result<Process> {
+pub fn criu_restore_cmd(leave_stopped: bool) -> Command {
     let mut cmd = Command::new(&[
         "criu", "restore",
         "--restore-sibling", "--restore-detached", // Become parent of the app (CLONE_PARENT)
@@ -49,12 +48,12 @@ pub fn spawn_restore(leave_stopped: bool) -> Result<Process> {
         cmd.arg("--leave-stopped");
     }
 
-    add_common_criu_opts(&mut cmd)?;
+    add_common_criu_opts(&mut cmd);
 
-    cmd.spawn()
+    cmd
 }
 
-fn add_common_criu_opts(cmd: &mut Command) -> Result<()> {
+fn add_common_criu_opts(cmd: &mut Command) {
     cmd.arg("--images-dir").arg(&*CRIU_SOCKET_DIR);
     cmd.args(&[
         "--cpu-cap",    // Save and check CPUID information in the image
@@ -74,13 +73,10 @@ fn add_common_criu_opts(cmd: &mut Command) -> Result<()> {
 
     let extra_opts = std::env::var_os("CRIU_OPTS").unwrap_or_default();
     cmd.args(extra_opts.to_str()
-        .ok_or_else(|| anyhow!("CRIU_OPTS is UTF8 malformed"))?
+        .expect("CRIU_OPTS is UTF8 malformed")
         .split_whitespace());
-
-    Ok(())
 }
 
-pub fn spawn_smoke_check() -> Result<Process> {
+pub fn criu_check_cmd() -> Command {
     Command::new(&["criu", "check"])
-        .spawn()
 }

@@ -36,7 +36,7 @@ use crate::{
     process::{Command, CommandPidExt, ProcessExt, ProcessGroup, Stdio,
               spawn_set_ns_last_pid_server, set_ns_last_pid, MIN_PID},
     metrics::{with_metrics, with_metrics_raw},
-    filesystem::spawn_untar,
+    filesystem,
     image_streamer::{Stats, ImageStreamer},
     lock::with_checkpoint_restore_lock,
     criu,
@@ -173,7 +173,8 @@ fn restore(
     }
 
     debug!("Restoring filesystem");
-    spawn_untar(img_streamer.tar_fs_pipe.unwrap())?
+    filesystem::untar_cmd(img_streamer.tar_fs_pipe.unwrap())
+        .spawn()?
         .wait_for_success()?;
     debug!("Filesystem restored");
 
@@ -239,7 +240,8 @@ fn restore(
     // is configured to use CLONE_PARENT.
     // If we fail, we kill whatever is left of the application.
     debug!("Restoring processes");
-    criu::spawn_restore(leave_stopped)?
+    criu::criu_restore_cmd(leave_stopped)
+        .spawn()?
         .join(&mut pgrp);
 
     // Wait for all our all our monitored processes to finish.
@@ -421,7 +423,8 @@ impl Run {
         // preferrable to avoid disturbing another instance of FastFreeze trying
         // to do PID control.
         with_checkpoint_restore_lock(|| {
-            criu::spawn_smoke_check()?
+            criu::criu_check_cmd()
+                .spawn()?
                 .wait_for_success()?;
 
             ensure_non_conflicting_pid()?;

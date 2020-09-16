@@ -13,7 +13,6 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-use anyhow::Result;
 use std::{
     path::PathBuf,
     collections::HashSet,
@@ -21,7 +20,7 @@ use std::{
 };
 use crate::{
     consts::*,
-    process::{Command, Process, Stdio},
+    process::{Command, Stdio},
 };
 
 lazy_static! {
@@ -29,7 +28,7 @@ lazy_static! {
         .unwrap_or_else(|_| "tar".to_string());
 }
 
-pub fn spawn_tar(preserved_paths: HashSet<PathBuf>, stdout: fs::File) -> Result<Process> {
+pub fn tar_cmd(preserved_paths: HashSet<PathBuf>, stdout: fs::File) -> Command {
     let mut cmd = Command::new(&[&*TAR_CMD]);
     if log_enabled!(log::Level::Trace) {
         cmd.arg("--verbose");
@@ -45,11 +44,11 @@ pub fn spawn_tar(preserved_paths: HashSet<PathBuf>, stdout: fs::File) -> Result<
         .arg("--exclude").arg(&*NO_PRESERVE_FF_DIR)
         .args(&preserved_paths)
         .arg(&*FF_DIR)
-        .stdout(Stdio::from(stdout))
-        .spawn()
+        .stdout(Stdio::from(stdout));
+    cmd
 }
 
-pub fn spawn_untar(stdin: fs::File) -> Result<Process> {
+pub fn untar_cmd(stdin: fs::File) -> Command {
     let mut cmd = Command::new(&[&*TAR_CMD]);
     if log_enabled!(log::Level::Trace) {
         cmd.arg("--verbose");
@@ -61,6 +60,6 @@ pub fn spawn_untar(stdin: fs::File) -> Result<Process> {
         "--no-overwrite-dir",
         "--file", "-",
     ])
-        .stdin(Stdio::from(stdin))
-        .spawn()
+        .stdin(Stdio::from(stdin));
+    cmd
 }

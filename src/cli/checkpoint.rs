@@ -158,7 +158,8 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // we should not. It's CRIU's responsability to do so. If it didn't SIGCONT
     // the app, then something bad has happened, and it would be unsafe to let
     // the application run in a bad state.
-    criu::spawn_dump()?
+    criu::criu_dump_cmd()
+        .spawn()?
         .join_as_non_killable(&mut pgrp);
 
     // We want to start dumping the file system ASAP, but we must wait for the
@@ -209,7 +210,8 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // criu-image-streamer, which incorporates the tarball into the checkpoint
     // image.
     debug!("Dumping filesystem");
-    filesystem::spawn_tar(preserved_paths, img_streamer.tar_fs_pipe.unwrap())?
+    filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
+        .spawn()?
         .wait_for_success()?;
     debug!("Filesystem dumped. Finishing dumping processes");
 
