@@ -71,6 +71,12 @@ pub const EXIT_CODE_FAILURE: u8 = 170;
 /// running the application.
 pub const EXIT_CODE_RESTORE_FAILURE: u8 = 171;
 
+/// When a process is running, we keep its stderr buffered, so that when an error
+/// comes, we can report the stderr in metrics. This constant indicates how many
+/// lines we want to report. Typically, we'll get something useful with the last
+/// 20 lines. Having too many lines makes error triage difficult.
+pub const STDERR_TAIL_NUM_LINES: usize = 20;
+
 lazy_static! {
     /// The invocation ID is a random 6 digit alphanum string. It is is used in a few places:
     /// 1) The shard prefix name

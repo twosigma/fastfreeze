@@ -35,7 +35,8 @@ use crate::{
     image::{ManifestFetchResult, ImageManifest, shard},
     process::{Command, CommandPidExt, ProcessExt, ProcessGroup, Stdio,
               spawn_set_ns_last_pid_server, set_ns_last_pid, MIN_PID},
-    metrics::{with_metrics, with_metrics_raw},
+    metrics::{with_metrics, with_metrics_raw, metrics_error_json},
+    util::JsonMerge,
     filesystem,
     image_streamer::{Stats, ImageStreamer},
     lock::with_checkpoint_restore_lock,
@@ -168,12 +169,14 @@ fn restore(
     for (download_cmd, shard_pipe) in shard_download_cmds.into_iter().zip(img_streamer.shard_pipes) {
         Command::new_shell(&download_cmd)
             .stdout(Stdio::from(shard_pipe))
+            .enable_stderr_logging("download")
             .spawn()?
             .join(&mut pgrp);
     }
 
     debug!("Restoring filesystem");
     filesystem::untar_cmd(img_streamer.tar_fs_pipe.unwrap())
+        .enable_stderr_logging("untar")
         .spawn()?
         .wait_for_success()?;
     debug!("Filesystem restored");
@@ -241,6 +244,7 @@ fn restore(
     // If we fail, we kill whatever is left of the application.
     debug!("Restoring processes");
     criu::criu_restore_cmd(leave_stopped)
+        .enable_stderr_logging("criu")
         .spawn()?
         .join(&mut pgrp);
 
@@ -262,8 +266,13 @@ fn restore(
 /// 1) We proxy signals we receive to our child pid=APP_ROOT_PID.
 /// 2) We reap processes that get reparented to us.
 /// 3) When APP_ROOT_PID dies, we return an error that contains the appropriate exit_code.
-///    (even when the application exited with 0. It makes the code simpler).
 fn monitor_app() -> Result<()> {
+    match monitor_app_inner() {
+        Err(e) if ExitCode::from_error(&e) == 0 => Ok(()),
+        other => other,
+    }
+}
+fn monitor_app_inner() -> Result<()> {
     for sig in Signal::iterator() {
         // We don't forward SIGCHLD, and neither `FORBIDDEN` signals (e.g.,
         // SIGSTOP, SIGFPE, SIGKILL, ...)
@@ -400,18 +409,24 @@ fn ensure_non_conflicting_pid() -> Result<()> {
 impl super::CLI for Run {
     fn run(self) -> Result<()> {
         // We use `with_metrics` to log the exit_code of the application and run time duration
-        with_metrics_raw("run", || self._run(), |result|
+        with_metrics_raw("run", || self.run_inner(), |result|
             match result {
-                Ok(()) => json!({"exit_code": 0}),
-                Err(e) => json!({"exit_code": ExitCode::from_error(&e),
-                                 "msg": e.to_string()}),
+                Ok(()) => json!({
+                    "outcome": "success",
+                    "exit_code": 0,
+                }),
+                Err(e) => json!({
+                    "outcome": "error",
+                    "exit_code": ExitCode::from_error(&e),
+                    "msg": e.to_string(),
+                }).merge(metrics_error_json(e))
             }
         )
     }
 }
 
 impl Run {
-    fn _run(self) -> Result<()> {
+    fn run_inner(self) -> Result<()> {
         let Self {
             image_url, app_args, on_app_ready_cmd, no_restore,
             allow_bad_image_version, preserved_paths, leave_stopped, verbose: _,
@@ -419,11 +434,12 @@ impl Run {
 
         let preserved_paths = preserved_paths.into_iter().collect();
 
-        // Holding the lock while invoking any process (e.g., `spawn_smoke_check`) is
+        // Holding the lock while invoking any process (e.g., `criu_check_cmd`) is
         // preferrable to avoid disturbing another instance of FastFreeze trying
         // to do PID control.
         with_checkpoint_restore_lock(|| {
             criu::criu_check_cmd()
+                .enable_stderr_logging("criu-check")
                 .spawn()?
                 .wait_for_success()?;
 

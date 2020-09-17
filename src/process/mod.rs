@@ -16,8 +16,11 @@ mod command;
 mod process_group;
 mod process;
 mod spawn_with_pid;
+mod stderr_logger;
+mod error;
 
 pub use command::{Command, PipeCommandExt, Stdio, EnvVars};
 pub use process::{Process, Output};
 pub use process_group::{ProcessExt, ProcessGroup};
+pub use error::{ProcessError, ProcessGroupError};
 pub use spawn_with_pid::{CommandPidExt, set_ns_last_pid, spawn_set_ns_last_pid_server, MIN_PID};

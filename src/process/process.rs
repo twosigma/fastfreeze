@@ -15,11 +15,10 @@
 use anyhow::{Result, Context};
 use std::{
     time::{Duration, Instant},
-    os::unix::process::ExitStatusExt,
-    convert::TryFrom,
 };
 use nix::{
-    sys::signal::{self, Signal}, unistd::Pid,
+    sys::signal::{self, Signal},
+    unistd::Pid,
 };
 
 pub use std::process::{
@@ -32,6 +31,10 @@ pub use std::process::{
     Child
 };
 use crate::signal::{check_for_pending_sigterm, retry_on_interrupt};
+use super::{
+    stderr_logger::StderrLogger,
+    ProcessError,
+};
 
 // We create our own `Child` wrapper to provide better error context.
 // We further expose a slightly different API than what is offered from the stdlib.
@@ -40,11 +43,15 @@ use crate::signal::{check_for_pending_sigterm, retry_on_interrupt};
 pub struct Process {
     inner: Child,
     display_cmd: String,
+    pub stderr_logger: Option<StderrLogger>,
 }
 
 impl Process {
-    pub fn new(inner: Child, display_cmd: String) -> Self {
-        Self { inner, display_cmd }
+    pub fn new(mut inner: Child, display_cmd: String, stderr_log_prefix: Option<&'static str>) -> Self {
+        let stderr_logger = stderr_log_prefix.map(|prefix|
+             StderrLogger::new(prefix, inner.stderr.take().expect("stderr not captured"))
+        );
+        Self { inner, display_cmd, stderr_logger }
     }
 
     pub fn pid(&self) -> i32 { self.inner.id() as i32 }
@@ -56,13 +63,25 @@ impl Process {
 
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         check_for_pending_sigterm()?;
-        self.inner.try_wait()
-            .with_context(|| format!("wait(pid={}) failed", self.pid()))
+        let result = self.inner.try_wait()
+            .with_context(|| format!("wait(pid={}) failed", self.pid()));
+        // We drain the stderr after the process may have exited. It ensures we
+        // drain every last bit of it (under the assumption that the process
+        // didn't leak its stderr to another process).
+        self.drain_stderr_logger();
+        result
     }
 
     pub fn wait(&mut self) -> Result<ExitStatus> {
         retry_on_interrupt(|| {
             check_for_pending_sigterm()?;
+            // We wait for the process to exit, but at the same time we must
+            // drain its stderr. It's a bit painful to do it well with POSIX.
+            // Instead, we'll make a blocking stderr read.
+            // XXX We make the assumption that the process doesn't leak its
+            // stderr to another process. Otherwise, we could be blocking forever,
+            // even though the process has died.
+            self.stderr_logger.as_mut().map(|sl| sl.set_blocking(true).drain());
             self.inner.wait()
                 .with_context(|| format!("wait(pid={}) failed", self.pid()))
         })
@@ -84,11 +103,15 @@ impl Process {
 
     pub fn wait_for_success(&mut self) -> Result<()> {
         let exit_status = self.wait()?;
-        ensure_successful_exit_status(exit_status, &self.display_cmd)
+        ensure_successful_exit_status(
+            exit_status, self.display_cmd.clone(), self.stderr_logger.as_ref())
     }
 
     pub fn wait_with_output(self) -> Result<Output> {
-        let Process { display_cmd, inner } = self;
+        let Process { display_cmd, inner, stderr_logger } = self;
+
+        assert!(stderr_logger.is_none(),
+                "stderr logging is not supported when using wait_with_output()");
 
         // FIXME `wait_with_output()` can read from stderr, and stdout and
         // ignore if we received a SIGTERM. That's because `read_to_end()` is
@@ -103,6 +126,10 @@ impl Process {
             stderr: result.stderr,
             display_cmd,
         })
+    }
+
+    pub fn drain_stderr_logger(&mut self) {
+        self.stderr_logger.as_mut().map(|sl| sl.drain());
     }
 
     pub fn reap_on_drop(self) -> ProcessDropReaper {
@@ -137,21 +164,20 @@ pub struct Output {
 
 impl Output {
     pub fn ensure_success(&self) -> Result<()> {
-        ensure_successful_exit_status(self.status, &self.display_cmd)
+        ensure_successful_exit_status(self.status, self.display_cmd.clone(), None)
     }
 }
 
-fn ensure_successful_exit_status(exit_status: ExitStatus, display_cmd: &str) -> Result<()> {
+fn ensure_successful_exit_status(
+    exit_status: ExitStatus,
+    display_cmd: String,
+    stderr_logger: Option<&StderrLogger>
+) -> Result<()> {
     if exit_status.success() {
         Ok(())
-    } else if let Some(exit_code) = exit_status.code() {
-        bail!("`{}` failed with exit_code={}", display_cmd, exit_code);
-    } else if let Some(signal) = exit_status.signal() {
-        let signal = Signal::try_from(signal as i32)
-            .map_or_else(|_| format!("signal {}", signal), |s| s.to_string());
-        bail!("`{}` caught fatal {}", display_cmd, signal)
     } else {
-        bail!("Unexpected child exit status {:?}", exit_status);
+        let stderr_tail = stderr_logger.map(|sl| sl.into());
+        bail!(ProcessError { exit_status, display_cmd, stderr_tail })
     }
 }
 

@@ -83,7 +83,8 @@ impl ImageStreamer {
         ]);
         cmd
             .arg("--images-dir").arg(&*CRIU_SOCKET_DIR)
-            .arg("capture");
+            .arg("capture")
+            .enable_stderr_logging("streamer");
 
         Ok(Self {
             process: cmd.spawn()?,
@@ -114,7 +115,8 @@ impl ImageStreamer {
         ]);
         cmd
             .arg("--images-dir").arg(&*CRIU_SOCKET_DIR)
-            .arg("serve");
+            .arg("serve")
+            .enable_stderr_logging("streamer");
 
         Ok(Self {
             process: cmd.spawn()?,
@@ -143,7 +145,8 @@ impl ImageStreamer {
             "--images-dir"
          ]);
          cmd.arg(output_dir)
-            .arg("extract");
+            .arg("extract")
+            .enable_stderr_logging("streamer");
 
         Ok(Self {
             process: cmd.spawn()?,

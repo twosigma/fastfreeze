@@ -17,7 +17,7 @@ use std::{
     os::unix::io::AsRawFd,
     io::{ErrorKind, Read},
     time::{Duration, Instant},
-    fs,
+    fs, iter,
 };
 use nix::{
     poll::{PollFd, PollFlags},
@@ -28,14 +28,14 @@ use crate::{
     consts::*,
     util::{poll_nointr, Pipe},
 };
-use super::Process;
+use super::{Process, ProcessError, ProcessGroupError};
 
 /// `ProcessGroup` is used for monitoring a group of processes.
 /// When dropped, the whole group is killed, except non-killable children.
 pub struct ProcessGroup {
     /// We use a pipe to process SIGCHLD, because at some point we need to select()
     /// on a pipe and watch for children to fail simultaneously.
-    pub sigchld_pipe: fs::File,
+    sigchld_pipe: fs::File,
     /// The list of children. When a child terminates, it is taken out from the list.
     children: Vec<ProcessMembership>,
     /// When `ProcessGroup` is dropped, it sends a SIGTERM to the remaining
@@ -118,7 +118,7 @@ impl ProcessGroup {
         for mut child in children {
             if child.inner.try_wait()?.is_some() { // has child exited ?
                 if let Err(err) = child.inner.wait_for_success() { // has child errored ?
-                    errors.push(err.to_string());
+                    errors.push(err.downcast::<ProcessError>()?);
                 }
             } else {
                 self.children.push(child);
@@ -126,17 +126,28 @@ impl ProcessGroup {
         }
 
         if !errors.is_empty() {
-           bail!(errors.join(", "));
+           bail!(ProcessGroupError { errors });
         }
 
         Ok(self.children.iter().any(|c| !c.daemon))
     }
 
+    pub fn poll_fds(&self) -> Vec<PollFd> {
+        // Collect all the fd of the stderr that we should be monitoring
+        // with the fd of the sigchld. Drainage of stderrs happens in
+        // child.inner.try_wait() within try_wait_for_success().
+        self.children.iter()
+            .filter_map(|c| c.inner.stderr_logger.as_ref())
+            .map(|sl| sl.stderr_fd)
+            .chain(iter::once(self.sigchld_pipe.as_raw_fd()))
+            .map(|fd| PollFd::new(fd, PollFlags::POLLIN))
+            .collect()
+    }
+
     pub fn wait_for_success(&mut self) -> Result<()> {
         while self.try_wait_for_success()? {
-            let fd = self.sigchld_pipe.as_raw_fd();
             let timeout = -1;
-            poll_nointr(&mut [PollFd::new(fd, PollFlags::POLLIN)], timeout)
+            poll_nointr(&mut self.poll_fds(), timeout)
                 .context("Failed to poll()")?;
         }
         Ok(())

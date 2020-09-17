@@ -47,6 +47,7 @@ pub struct Command {
     inner: StdCommand,
     display_args: Vec<String>,
     show_cmd_on_spawn: bool,
+    stderr_log_prefix: Option<&'static str>,
 }
 
 impl Command {
@@ -57,6 +58,7 @@ impl Command {
             inner: StdCommand::new(&program),
             display_args: vec![Self::arg_for_display(&program)],
             show_cmd_on_spawn: true,
+            stderr_log_prefix: None,
         };
         cmd.args(args);
         cmd
@@ -71,6 +73,7 @@ impl Command {
             inner,
             display_args: vec![Self::arg_for_display(&script)],
             show_cmd_on_spawn: true,
+            stderr_log_prefix: None,
         }
     }
 
@@ -114,11 +117,24 @@ impl Command {
         if self.show_cmd_on_spawn {
             debug!("+ {}", display_cmd);
         }
-        Ok(Process::new(inner, display_cmd))
+        Ok(Process::new(inner, display_cmd, self.stderr_log_prefix))
     }
 
     pub fn exec(&mut self) -> Result<()> {
         bail!(self.inner.exec())
+    }
+
+    /// `enable_stderr_logging` enables two things:
+    /// 1) stderr is emitted via our logging facilities (info!()).
+    ///    log lines are prefixed with `log_prefix`.
+    /// 2) A fixed sized backlog is kept, and included in the error message.
+    /// The process' stderr is drained when calling try_wait(), wait(), or drain_stderr_logger().
+    pub fn enable_stderr_logging(&mut self, log_prefix: &'static str) -> &mut Command {
+        self.stderr_log_prefix = Some(log_prefix);
+        // We'd also like to redirect stdout to stderr in some cases.
+        // But I can't find a way to do this in a simple way with the Rust std library.
+        self.stderr(Stdio::piped());
+        self
     }
 }
 

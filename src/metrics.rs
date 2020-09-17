@@ -19,7 +19,7 @@ use std::{
 };
 use crate::{
     consts::*,
-    process::{Process, Command},
+    process::{Process, Command, ProcessError, ProcessGroupError},
     util::JsonMerge,
 };
 use serde_json::Value;
@@ -89,7 +89,19 @@ pub fn with_metrics<F,M,R>(action: &str, f: F, metrics_f: M) -> Result<R>
             Err(e) => json!({
                 "outcome": "error",
                 "msg": e.to_string(),
-            }),
+            }).merge(metrics_error_json(e)),
         }
     )
+}
+
+pub fn metrics_error_json(e: &anyhow::Error) -> Value {
+    if let Some(e) = e.downcast_ref::<ProcessError>() {
+        json!({"process": e.to_json()})
+    }
+    else if let Some(e) = e.downcast_ref::<ProcessGroupError>() {
+        json!({"process": e.to_json()})
+    }
+    else {
+        json!({})
+    }
 }

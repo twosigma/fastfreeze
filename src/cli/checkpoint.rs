@@ -14,7 +14,6 @@
 
 use anyhow::{Result, Context};
 use std::{
-    os::unix::io::AsRawFd,
     collections::HashSet,
     path::{Path, PathBuf},
     time::{SystemTime, Duration},
@@ -144,6 +143,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     for (upload_cmd, shard_pipe) in shard_upload_cmds.into_iter().zip(img_streamer.shard_pipes) {
         Command::new_shell(&upload_cmd)
             .stdin(Stdio::from(shard_pipe))
+            .enable_stderr_logging("upload")
             .spawn()?
             .join(&mut pgrp);
     }
@@ -159,6 +159,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // the app, then something bad has happened, and it would be unsafe to let
     // the application run in a bad state.
     criu::criu_dump_cmd()
+        .enable_stderr_logging("criu")
         .spawn()?
         .join_as_non_killable(&mut pgrp);
 
@@ -168,16 +169,16 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // streamer progress pipe.
     // We must also check for the CRIU process, otherwise, we could hang forever
     while pgrp.try_wait_for_success()? {
-        let mut poll_fds = [
-            PollFd::new(img_streamer.progress.fd, PollFlags::POLLIN),
-            PollFd::new(pgrp.sigchld_pipe.as_raw_fd(), PollFlags::POLLIN)
-        ];
+        let mut poll_fds = pgrp.poll_fds();
+        poll_fds.push(PollFd::new(img_streamer.progress.fd, PollFlags::POLLIN));
         let timeout = -1;
         poll_nointr(&mut poll_fds, timeout)?;
 
         // Check if we have something to read on the progress pipe.
+        // unwrap() is safe. We had pushed a value in the vector.
+        let streamer_poll_fd = poll_fds.last().expect("missing streamer poll_fd");
         // unwrap() is safe: we assume the kernel returns valid bits in `revents`.
-        if !poll_fds[0].revents().unwrap().is_empty() {
+        if !streamer_poll_fd.revents().expect("revents invalid").is_empty() {
             img_streamer.progress.wait_for_checkpoint_start()?;
             break;
         }
@@ -211,6 +212,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // image.
     debug!("Dumping filesystem");
     filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
+        .enable_stderr_logging("tar")
         .spawn()?
         .wait_for_success()?;
     debug!("Filesystem dumped. Finishing dumping processes");
