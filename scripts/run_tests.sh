@@ -12,6 +12,12 @@ IMAGE_DIR=/tmp/ff-test-images
 sudo rm -rf $IMAGE_DIR
 mkdir -p $IMAGE_DIR
 chmod 1777 $IMAGE_DIR # /tmp like permissions
+cat <<- EOF > $IMAGE_DIR/show_metrics.sh
+#!/bin/bash
+echo -n "Metric: "
+echo "\$@" | jq -C .
+EOF
+chmod +x $IMAGE_DIR/show_metrics.sh
 
 docker stop ff || true
 
@@ -21,13 +27,14 @@ docker run \
   --cap-add=cap_sys_ptrace \
   --name ff \
   --mount type=bind,source=$IMAGE_DIR,target=/images \
+  --env FF_METRICS_RECORDER=/images/show_metrics.sh \
   fastfreeze-test:latest \
-  fastfreeze run --image-url file:/images/test-1 sleep 30d &
+  fastfreeze run -v --image-url file:/images/test-1 -- sleep 30d &
 sleep 2 # wait for app started
 
 # Forget to put cap-add, and get Permission Denied
 
-docker exec ff fastfreeze checkpoint
+docker exec --env FF_METRICS_RECORDER=/images/show_metrics.sh ff fastfreeze checkpoint -v
 
 wait
 
@@ -37,9 +44,10 @@ docker run \
   --cap-add=cap_sys_ptrace \
   --name ff \
   --mount type=bind,source=$IMAGE_DIR,target=/images \
+  --env FF_METRICS_RECORDER=/images/show_metrics.sh \
   fastfreeze-test:latest \
-  fastfreeze run --image-url file:/images/test-1 sleep 30d &
-sleep 2 # wait for app started
+  fastfreeze run -v --image-url file:/images/test-1 -- sleep 30d &
+sleep 2 # wait for app restore
 
 docker exec ff fastfreeze checkpoint
 

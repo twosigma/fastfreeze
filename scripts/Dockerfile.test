@@ -7,6 +7,8 @@ RUN apt-get install -y xz-utils libcap2-bin
 
 COPY fastfreeze.tar.xz /tmp
 
+RUN apt-get install -y jq
+
 RUN set -ex; \
   tar xf /tmp/fastfreeze.tar.xz -C /opt; \
   ln -s /opt/fastfreeze/fastfreeze_wrapper.sh /usr/local/bin/fastfreeze; \
