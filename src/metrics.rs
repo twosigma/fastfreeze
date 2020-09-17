@@ -43,8 +43,7 @@ pub fn emit_metrics(event: Value) -> Result<Option<Process>> {
         "invocation_id": *INVOCATION_ID,
         "elapsed_time": START_TIME.elapsed().as_secs_f64(),
         "cli_args": *ARGS_JSON,
-        "event": event,
-    });
+    }).merge(event);
 
     let p = Command::new(&[metrics_recorder_path])
         .arg(&serde_json::to_string(&payload)?)
@@ -88,7 +87,7 @@ pub fn with_metrics<F,M,R>(action: &str, f: F, metrics_f: M) -> Result<R>
             }).merge(metrics_f(result)),
             Err(e) => json!({
                 "outcome": "error",
-                "msg": e.to_string(),
+                "error": format!("{:#}", e),
             }).merge(metrics_error_json(e)),
         }
     )

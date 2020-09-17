@@ -418,7 +418,7 @@ impl super::CLI for Run {
                 Err(e) => json!({
                     "outcome": "error",
                     "exit_code": ExitCode::from_error(&e),
-                    "msg": e.to_string(),
+                    "error": format!("{:#}", e),
                 }).merge(metrics_error_json(e))
             }
         )
