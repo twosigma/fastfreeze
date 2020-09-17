@@ -94,6 +94,10 @@ impl ProcessGroup {
         self
     }
 
+    pub fn last_mut(&mut self) -> Option<&mut Process> {
+        self.children.last_mut().map(|membership| &mut membership.inner)
+    }
+
     fn drain_sigchld_pipe(&mut self) {
         // Discard the content of the pipe
         let mut vec = Vec::new();

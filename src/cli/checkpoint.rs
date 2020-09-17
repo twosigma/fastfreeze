@@ -214,7 +214,11 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
         .enable_stderr_logging("tar")
         .spawn()?
-        .wait_for_success()?;
+        .join(&mut pgrp);
+    pgrp.last_mut().unwrap().wait()?; // wait for tar to finish
+    pgrp.try_wait_for_success()?; // if tar errored, this is where we exit
+    // We print this debug message so that in the logs, we can have a timestamp
+    // to tell us how long it took. Maybe it would be better to have a metric event.
     debug!("Filesystem dumped. Finishing dumping processes");
 
     // Wait for checkpoint to complete
