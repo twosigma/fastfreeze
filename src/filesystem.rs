@@ -30,9 +30,17 @@ lazy_static! {
 
 pub fn tar_cmd(preserved_paths: HashSet<PathBuf>, stdout: fs::File) -> Command {
     let mut cmd = Command::new(&[&*TAR_CMD]);
+
+    // TODO We can't emit log lines during tarring, because we log them
+    // And the log file is included in the tar archive. tar detects that the log file
+    // is changing, and fails, ruining the fun. So we don't pass --verbose on tar for now
+    // as it would emit output during tarring. We can come back to that issue later.
+    /*
     if log_enabled!(log::Level::Trace) {
         cmd.arg("--verbose");
     }
+    */
+
     cmd.args(&[
         "--directory", "/",
         "--create",
