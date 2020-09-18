@@ -152,13 +152,13 @@ impl AppConfig {
 
 
 // It returns Stats, that's the transfer speeds and all given by criu-image-streamer,
-// And the number of seconds since the checkpoint happened. This is helpful for emmitting metrics.
+// and the duration since the checkpoint happened. This is helpful for emitting metrics.
 fn restore(
     image_url: String,
     mut preserved_paths: HashSet<PathBuf>,
     shard_download_cmds: Vec<String>,
     leave_stopped: bool,
-) -> Result<(Stats, u64)> {
+) -> Result<(Stats, Duration)> {
     info!("Restoring application{}", if leave_stopped { " (leave stopped)" } else { "" });
     let mut pgrp = ProcessGroup::new()?;
 
@@ -190,7 +190,7 @@ fn restore(
     // preserved-paths, and application time offset.
     // We load the app config, add the new preserved_paths, and save it. It will be useful for the
     // subsequent checkpoint.
-    let secs_since_checkpoint = {
+    let duration_since_checkpoint = {
         let old_config = AppConfig::restore()?;
         preserved_paths.extend(old_config.preserved_paths);
 
@@ -207,17 +207,16 @@ fn restore(
         // The duration between restore and checkpoint can therefore be inaccurate, and negative.
         // we'll clamp these negative values to 0.
         let restore_started_at = SystemTime::now() - START_TIME.elapsed();
-        let secs_since_checkpoint = restore_started_at.duration_since(old_config.created_at)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        debug!("Duration between restore and checkpoint: {}s", secs_since_checkpoint);
+        let duration_since_checkpoint = restore_started_at.duration_since(old_config.created_at)
+            .unwrap_or(Duration::new(0,0));
+        debug!("Duration between restore and checkpoint: {:.1}s", duration_since_checkpoint.as_secs_f64());
 
         // Adjust the libtimevirt offsets
         debug!("Application clock: {:.1}s",
             Duration::from_nanos(old_config.app_clock as u64).as_secs_f64());
         virt::time::ConfigPath::default().adjust_timespecs(old_config.app_clock)?;
 
-        secs_since_checkpoint
+        duration_since_checkpoint
     };
 
     // We start the ns_last_pid daemon here. Note that we join_as_daemon() instead of join(),
@@ -264,7 +263,7 @@ fn restore(
 
     info!("Application is ready, restore took {:.1}s", START_TIME.elapsed().as_secs_f64());
 
-    Ok((stats, secs_since_checkpoint))
+    Ok((stats, duration_since_checkpoint))
 }
 
 /// `monitor_app()` assumes the init role. We do the following:
@@ -469,8 +468,11 @@ impl Run {
                     with_metrics("restore", ||
                         restore(image_url, preserved_paths, shard_download_cmds, leave_stopped)
                             .context(ExitCode(EXIT_CODE_RESTORE_FAILURE)),
-                        |(stats, secs_since_checkpoint)|
-                            json!({"stats": stats, "secs_since_checkpoint": secs_since_checkpoint})
+                        |(stats, duration_since_checkpoint)|
+                            json!({
+                                "stats": stats,
+                                "duration_since_checkpoint_sec": duration_since_checkpoint.as_secs_f64(),
+                            })
                         )?;
                 }
                 RunMode::FromScratch => {
