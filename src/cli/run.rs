@@ -212,6 +212,13 @@ fn restore(
         debug!("Duration between restore and checkpoint: {:.1}s", duration_since_checkpoint.as_secs_f64());
 
         // Adjust the libtimevirt offsets
+        // Note that we do not add the duration_since_checkpoint to the clock.
+        // The man page of clock_gettime(2) says that CLOCK_MONOTONIC "does not
+        // count time that the system is suspended."
+        // The man page says that CLOCK_BOOTTIME is supposed to be the one that
+        // includes the duration when the system was suspended.
+        // For now, we don't worry much about the semantics of CLOCK_BOOTTIME.
+        // Rare are the applications that use it.
         debug!("Application clock: {:.1}s",
             Duration::from_nanos(old_config.app_clock as u64).as_secs_f64());
         virt::time::ConfigPath::default().adjust_timespecs(old_config.app_clock)?;
