@@ -186,6 +186,17 @@ fn restore(
     pgrp.try_wait_for_success()?; // if tar errored, this is where we exit.
     debug!("Filesystem restored");
 
+    // Because the tar command can be overridden by the user via TAR_CMD,
+    // it may consume many pids. Later, when we invoke the "criu restore" tool,
+    // we must ensure that its PID is lower than APP_ROOT_PID, otherwise it could
+    // clash with itself.
+    // We set ns_last_pid to APP_ROOT_PID-100 to balance performance and safety:
+    // too low, and we might have to do a PID round trip over pid_max, too high and
+    // we risk set_ns_last_pid and criu to go over APP_ROOT_PID if they are invoked via
+    // bash scripts that do interesting things.
+    // Note that later, we check that criu's pid is indeed lower than APP_ROOT_PID.
+    set_ns_last_pid(APP_ROOT_PID-100)?;
+
     // The file system is back, including the application configuration containing user-defined
     // preserved-paths, and application time offset.
     // We load the app config, add the new preserved_paths, and save it. It will be useful for the
@@ -250,13 +261,16 @@ fn restore(
     img_streamer.progress.wait_for_socket_init()
         .map_err(&mut check_pgrp_err)?;
 
-    // Restore processes. We become the parent of the application as CRIU
-    // is configured to use CLONE_PARENT.
-    // If we fail, we kill whatever is left of the application.
+    // Restore application processes.
+    // We become the parent of the application as CRIU is configured to use CLONE_PARENT.
     debug!("Restoring processes");
     criu::criu_restore_cmd(leave_stopped)
         .enable_stderr_logging("criu")
-        .spawn()?
+        .spawn()
+        .and_then(|ps| {
+            ensure!(ps.pid() < APP_ROOT_PID, "CRIU's pid is too high: {}", ps.pid());
+            Ok(ps)
+        })?
         .join(&mut pgrp);
 
     // Wait for all our all our monitored processes to finish.
