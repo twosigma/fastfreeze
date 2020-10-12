@@ -40,8 +40,6 @@ impl CommandPidExt for Command {
     /// Note: we consume self because we mutate it, and it would be unsound to
     /// call `spawn()` again on it.
     fn spawn_with_pid(mut self, pid: i32) -> Result<Process> {
-        debug_assert!(pid >= MIN_PID);
-
         unsafe {
             self.pre_exec(move ||
                 if std::process::id() as i32 != pid {
@@ -69,6 +67,8 @@ impl CommandPidExt for Command {
 }
 
 pub fn set_ns_last_pid(pid: i32) -> Result<()> {
+    // The fork hack doesn't work when the requested pid is lower than MIN_PID=300
+    ensure!(pid >= MIN_PID, "Cannot set pid lower than {}", MIN_PID);
     Command::new(&["set_ns_last_pid", &pid.to_string()])
         .spawn()?
         .wait_for_success()
