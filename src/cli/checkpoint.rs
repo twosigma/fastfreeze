@@ -20,8 +20,7 @@ use std::{
 };
 use nix::{
     poll::{PollFd, PollFlags},
-    sys::signal::{self, killpg},
-    unistd::Pid,
+    sys::signal,
 };
 use structopt::StructOpt;
 use serde::Serialize;
@@ -34,6 +33,7 @@ use crate::{
     util::poll_nointr,
     image_streamer::{Stats, ImageStreamer},
     lock::with_checkpoint_restore_lock,
+    signal::kill_process_tree,
     criu,
     filesystem,
     virt,
@@ -210,6 +210,8 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // We dump the filesystem with tar. The stdout of tar connects to
     // criu-image-streamer, which incorporates the tarball into the checkpoint
     // image.
+    // Note that CRIU can complete at any time, but it leaves the application in
+    // a stopped state, so the filesystem remains consistent.
     debug!("Dumping filesystem");
     filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
         .enable_stderr_logging("tar")
@@ -229,7 +231,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
 
     if leave_running {
         trace!("Resuming application");
-        killpg(Pid::from_raw(APP_ROOT_PID), signal::SIGCONT)
+        kill_process_tree(APP_ROOT_PID, signal::SIGCONT)
             .context("Failed to resume application")?;
     } else {
         // We kill the app later, once metrics are emitted.
@@ -262,7 +264,7 @@ impl super::CLI for Checkpoint {
             // risk terminating the container, preventing metrics from being emitted.
             if !leave_running {
                 debug!("Killing application");
-                killpg(Pid::from_raw(APP_ROOT_PID), signal::SIGKILL)
+                kill_process_tree(APP_ROOT_PID, signal::SIGKILL)
                     .context("Failed to kill application")?;
             }
 

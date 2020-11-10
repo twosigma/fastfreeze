@@ -20,7 +20,7 @@ use std::{
     fs, collections::HashSet
 };
 use nix::{
-    sys::signal::{self, kill, killpg, SigmaskHow, SigSet},
+    sys::signal::{self, kill, SigmaskHow, SigSet},
     sys::wait::{wait, WaitStatus},
     unistd::Pid,
 };
@@ -36,6 +36,7 @@ use crate::{
     process::{Command, CommandPidExt, ProcessExt, ProcessGroup, Stdio,
               spawn_set_ns_last_pid_server, set_ns_last_pid, MIN_PID},
     metrics::{with_metrics, with_metrics_raw, metrics_error_json},
+    signal::kill_process_tree,
     util::JsonMerge,
     filesystem,
     image_streamer::{Stats, ImageStreamer},
@@ -278,7 +279,7 @@ fn restore(
     // We might want to check that we are the parent of the process with pid APP_ROOT_PID,
     // otherwise, we might be killing an innocent process. But that would be racy anyways.
     if let Err(e) = pgrp.wait_for_success() {
-        let _ = killpg(Pid::from_raw(APP_ROOT_PID), signal::SIGKILL);
+        let _ = kill_process_tree(APP_ROOT_PID, signal::SIGKILL);
         return Err(e);
     }
 
@@ -322,7 +323,7 @@ fn monitor_app_inner() -> Result<()> {
             // kill remaining orphans: They belong to the process group that we
             // made with setsid() in run_from_scratch().
             // TODO Check if that's actually necessary.
-            let _ = killpg(pid, signal::SIGKILL);
+            let _ = kill_process_tree(APP_ROOT_PID, signal::SIGKILL);
             Err(app_exited_f())
         } else {
             Ok(())

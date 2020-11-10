@@ -18,10 +18,17 @@ use std::{
     error::Error,
     fmt::Display,
     result::Result as StdResult,
-    io::ErrorKind,
+    io::{BufReader, ErrorKind},
+    fs::File,
+    path::Path
 };
-use nix::errno::Errno;
-use nix::sys::signal;
+use std::io::prelude::*;
+use std::collections::HashSet;
+use nix::{
+    sys::signal::{self, killpg, Signal},
+    errno::Errno,
+    unistd::Pid
+};
 
 lazy_static! {
     static ref SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
@@ -103,4 +110,77 @@ pub fn retry_on_interrupt<R,E>(mut f: impl FnMut() -> StdResult<R,E>) -> StdResu
             other => return other,
         }
     }
+}
+
+fn get_children(pid: i32) -> Result<Vec<i32>> {
+    let task_dir = Path::new("/proc").join(pid.to_string()).join("task");
+    let mut children_str = String::new();
+    // We are okay to fail to open the task directory. That would mean that the
+    // task just disappeared.
+    if let Ok(task_dir_reader) = task_dir.read_dir() {
+        for task_entry in task_dir_reader {
+            // The children file ends with a space, and no new line, making it
+            // suitable to read repeatedly, and append the content in a single string buffer.
+            // Note: We tolerate open failures as the child may disappear.
+            if let Ok(mut file) = File::open(task_entry?.path().join("children")) {
+                file.read_to_string(&mut children_str)?;
+            }
+        }
+    }
+
+    Ok(children_str.trim().split_whitespace()
+        .map(|pid| pid.parse().expect("non-numeric pid"))
+        .collect())
+}
+
+fn get_process_tree(root_pid: i32) -> Result<Vec<i32>> {
+    fn get_process_tree_inner(pid: i32, pids: &mut Vec<i32>) -> Result<()> {
+        pids.push(pid);
+        for child in get_children(pid)? {
+            get_process_tree_inner(child, pids)?;
+        }
+        Ok(())
+    }
+
+    let mut pids = Vec::new();
+    get_process_tree_inner(root_pid, &mut pids)?;
+    Ok(pids)
+}
+
+/// Kill an entire process group. It is not atomic.
+/// Tasks may appear while we are traversing the tree.
+pub fn kill_process_tree(root_pid: i32, signal: Signal) -> Result<()> {
+    // The application is running under a process group (pid=APP_ROOT_PID)
+    // Normally we should be able to just kill that, but because the application
+    // can call setsid() and setpgrp(), then we might not get processes as process
+    // groups don't nest. So we need to iterate through all children.
+    // We gather process groups of all children, and kill these.
+    let mut pgrp_pids: HashSet::<i32> = HashSet::new();
+
+    for pid in get_process_tree(root_pid)? {
+        // We tolerate open failures as tasks may disappear.
+        if let Ok(file) = File::open(Path::new("/proc").join(pid.to_string()).join("status")) {
+            for line in BufReader::new(file).lines() {
+                // lines are of the format "Key:\tValue"
+                // The NSpgid line may have multiple pids separated with a \t. We only
+                // care about the first one, hence the .. at the end of the pattern match.
+                if let &[key, value, ..] = &*line?.split(":\t").collect::<Vec<_>>() {
+                    if key == "NSpgid" {
+                        pgrp_pids.insert(value.parse().expect("non-numeric pid"));
+                        break; // stop reading the status file, we have what we want.
+                    }
+                }
+            }
+        }
+    }
+
+    ensure!(!pgrp_pids.is_empty(), "Failed to parse process groups in /proc");
+
+    for pid in pgrp_pids {
+        // We ignore kill errors as process may disappear.
+        // It's not really satisfactory, but I'm not sure if we can do better.
+        let _ = killpg(Pid::from_raw(pid), signal);
+    }
+
+    Ok(())
 }
