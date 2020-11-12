@@ -49,6 +49,7 @@ DIST_BINS := \
 	$(shell which pv) \
 	$(shell which lz4) \
 	$(shell which zstd) \
+	$(shell which openssl) \
 
 DIST_LIBS := \
 	deps/libvirtcpuid/ld-virtcpuid.so \

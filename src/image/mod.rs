@@ -12,9 +12,11 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-mod compressor;
+mod compression;
+mod encryption;
 mod manifest;
 pub mod shard;
 
 pub use manifest::{ManifestFetchResult, ImageManifest};
-pub use compressor::{Compressor, CpuBudget};
+pub use compression::{Compression, CpuBudget};
+pub use encryption::{Encryption, check_passphrase_file_exists};

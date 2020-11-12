@@ -77,6 +77,10 @@ pub const EXIT_CODE_RESTORE_FAILURE: u8 = 171;
 /// 20 lines. Having too many lines makes error triage difficult.
 pub const STDERR_TAIL_NUM_LINES: usize = 20;
 
+/// The default encryption cipher for encrypting the image.
+/// We can let users define it in the future.
+pub const DEFAULT_ENCRYPTION_CIPHER: &str = "aes-256-cbc";
+
 lazy_static! {
     /// The invocation ID is a random 6 digit alphanum string. It is is used in a few places:
     /// 1) The shard prefix name

@@ -27,7 +27,7 @@ use serde::Serialize;
 use crate::{
     consts::*,
     store,
-    image::{ImageManifest, Compressor, shard, CpuBudget},
+    image::{ImageManifest, CpuBudget, shard, check_passphrase_file_exists},
     process::{Command, ProcessExt, ProcessGroup, Stdio},
     metrics::{with_metrics, emit_metrics},
     util::poll_nointr,
@@ -79,6 +79,12 @@ pub struct Checkpoint {
     #[structopt(long, default_value="medium")]
     cpu_budget: CpuBudget,
 
+    /// Enable image encryption. This points to a file containing a passphrase
+    /// used to encrypt the image. The passphrase should contain at least 256 bits
+    /// of entropy.
+    #[structopt(long)]
+    passphrase_file: Option<PathBuf>,
+
     /// Verbosity. Can be repeated
     #[structopt(short, long, parse(from_occurrences))]
     pub verbose: u8,
@@ -90,7 +96,7 @@ fn is_app_running() -> bool {
 
 pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     let Checkpoint {
-        image_url, num_shards, cpu_budget,
+        image_url, num_shards, cpu_budget, passphrase_file,
         preserved_paths, leave_running, verbose: _,
     } = opts;
 
@@ -108,6 +114,35 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // the run operation.
     let image_url = image_url.unwrap_or(config.image_url);
 
+    // As for preserved_paths, we join all the paths we know of.
+    // There is the downside of not being able to forget a path that was once preserved.
+    // The upside is that is less prone to bugs for users.
+    preserved_paths.extend(config.preserved_paths);
+
+    // For the passphrase_file, we take the one provided, or the one specified in
+    // a previous operation. This means that once we use encryption, there is no
+    // way to go back to using no encryption.
+    // Note that if the passphrase file is contained in the preserved_paths,
+    // we'll include it. It would be a little odd, but not necessarily harmful.
+    // We won't emit a warning if that's the case.
+    let passphrase_file = passphrase_file.or(config.passphrase_file);
+    if let Some(ref passphrase_file) = passphrase_file {
+        check_passphrase_file_exists(passphrase_file)?;
+    }
+
+    ensure!(is_app_running(), "Application is not running");
+
+    // The manifest contains the name of the shards, which are generated at random.
+    // We combine it with the store to generate the shard upload commands.
+    // A shard upload command is of the form:
+    //     "lz4 -1 - - | aws s3 cp - s3://bucket/img/XXXXXX.ffs"
+    let img_manifest = ImageManifest::new(
+        num_shards, passphrase_file.is_some(), cpu_budget.into());
+
+    let store = store::from_url(&image_url)?;
+    let shard_upload_cmds = shard::upload_cmds(
+        &img_manifest, passphrase_file.as_ref(), &*store)?;
+
     // We emit a "checkpoint_start" event to make it easier to track down
     // containers that vanish during checkpoints. We don't wait for the metrics
     // process to complete, it would delay checkpointing.
@@ -116,23 +151,10 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         emit_metrics(event)?.map(|p| p.reap_on_drop())
     };
 
-    // As for preserved_paths, we join all the paths we know of.
-    // There is the downside of not being able to forget a path that was once preserved.
-    // The upside is that is less prone to bugs for users.
-    preserved_paths.extend(config.preserved_paths);
-
-    ensure!(is_app_running(), "Application is not running");
-
-    // The manifest contains the name of the shards, which are generated at random.
-    // We combine it with the store to generate the shard upload commands.
-    // A shard upload command is of the form:
-    //     "lz4 -1 - - | aws s3 cp - s3://bucket/img/XXXXXX.ffs"
-    let img_manifest = ImageManifest::new(num_shards, Compressor::from(cpu_budget));
-    let store = store::from_url(&image_url)?;
-    let shard_upload_cmds = shard::upload_cmds(&img_manifest, &*store);
-
-    info!("Checkpointing application to {} (num_shards={} compressor={:?} prefix={})",
-          image_url, num_shards, img_manifest.compressor, img_manifest.shard_prefix);
+    info!("Checkpointing application to {} ({})", image_url, img_manifest);
+    if let Some(ref passphrase_file) = passphrase_file {
+        info!("Encrypting image with passphrase from file {}", passphrase_file.display());
+    }
 
     // `pgrp` monitors all our child processes. If one fails, the whole group fails
     let mut pgrp = ProcessGroup::new()?;
@@ -196,6 +218,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         let config = AppConfig {
             image_url: image_url.to_string(),
             preserved_paths: preserved_paths.clone(),
+            passphrase_file,
             app_clock,
             // Ideally, we want the clock time once the checkpoint has ended,
             // but that would be a bit difficult. We could though.

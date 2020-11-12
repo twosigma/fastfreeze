@@ -19,6 +19,8 @@ echo "\$@" | jq -C .
 EOF
 chmod +x $IMAGE_DIR/show_metrics.sh
 
+echo passphrase > $IMAGE_DIR/encryption_key
+
 docker stop ff || true
 
 docker run \
@@ -29,7 +31,9 @@ docker run \
   --mount type=bind,source=$IMAGE_DIR,target=/images \
   --env FF_METRICS_RECORDER=/images/show_metrics.sh \
   fastfreeze-test:latest \
-  fastfreeze run -v --image-url file:/images/test-1 -- sleep 30d &
+  fastfreeze run -v \
+    --image-url file:/images/test-1 \
+    --passphrase-file /images/encryption_key -- sleep 30d &
 sleep 2 # wait for app started
 
 # Forget to put cap-add, and get Permission Denied
@@ -46,7 +50,9 @@ docker run \
   --mount type=bind,source=$IMAGE_DIR,target=/images \
   --env FF_METRICS_RECORDER=/images/show_metrics.sh \
   fastfreeze-test:latest \
-  fastfreeze run -v --image-url file:/images/test-1 -- sleep 30d &
+  fastfreeze run -v \
+    --image-url file:/images/test-1 \
+    --passphrase-file /images/encryption_key -- sleep 30d &
 sleep 2 # wait for app restore
 
 docker exec ff fastfreeze checkpoint

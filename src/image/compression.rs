@@ -13,43 +13,52 @@
 //  limitations under the License.
 
 use serde::{Serialize, Deserialize};
-use std::str::FromStr;
+use std::{
+    str::FromStr,
+    fmt,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Compressor {
-    None,
+pub enum Compression {
     Lz4,
     Zstd,
 }
 
-impl Compressor {
-    pub fn compress_cmd(&self) -> Option<&str> {
+impl Compression {
+    pub fn compress_cmd(&self) -> &str {
         match self {
-            Compressor::None => None,
-            Compressor::Lz4 => Some("lz4 -1 - -"),
-            Compressor::Zstd => Some("zstd -1 - -"),
+            Compression::Lz4 => "lz4 -1 - -",
+            Compression::Zstd => "zstd -1 - -",
         }
     }
 
-    pub fn decompress_cmd(&self) -> Option<&str> {
+    pub fn decompress_cmd(&self) -> &str {
         match self {
-            Compressor::None => None,
-            Compressor::Lz4 => Some("lz4 -d - -"),
-            Compressor::Zstd => Some("zstd -d - -"),
+            Compression::Lz4 => "lz4 -d - -",
+            Compression::Zstd => "zstd -d - -",
         }
     }
 }
 
-impl From<CpuBudget> for Compressor {
+impl fmt::Display for Compression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Compression::Lz4 => write!(f, "lz4"),
+            Compression::Zstd => write!(f, "zstd"),
+        }
+    }
+}
+
+
+impl From<CpuBudget> for Option<Compression> {
     fn from(cpu_budget: CpuBudget) -> Self {
         match cpu_budget {
-            CpuBudget::Low => Compressor::None,
-            CpuBudget::Medium => Compressor::Lz4,
-            CpuBudget::High => Compressor::Zstd,
+            CpuBudget::Low => None,
+            CpuBudget::Medium => Some(Compression::Lz4),
+            CpuBudget::High => Some(Compression::Zstd),
         }
     }
 }
-
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize)]
 pub enum CpuBudget {

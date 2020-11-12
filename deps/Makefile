@@ -15,7 +15,7 @@ $(DEPS_FILE):
 		build-essential pkg-config \
 		libprotobuf-dev libprotobuf-c-dev protobuf-c-compiler protobuf-compiler \
 		libbsd-dev iproute2 libcap-dev libnl-3-dev libnet-dev libaio-dev \
-		patchelf pv liblz4-tool zstd jq wget
+		patchelf pv liblz4-tool zstd jq wget openssl
 	touch $@
 
 BUILDS := \

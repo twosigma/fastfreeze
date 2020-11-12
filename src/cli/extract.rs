@@ -20,7 +20,7 @@ use serde::Serialize;
 use crate::{
     consts::*,
     store,
-    image::{ManifestFetchResult, ImageManifest, shard},
+    image::{ManifestFetchResult, ImageManifest, shard, check_passphrase_file_exists},
     process::{Command, ProcessExt, ProcessGroup, Stdio},
     image_streamer::ImageStreamer,
 };
@@ -45,6 +45,12 @@ pub struct Extract {
     /// Allow restoring of images that don't match the version we expect.
     #[structopt(long)]
     allow_bad_image_version: bool,
+
+    /// Provide a file containing the passphrase to be used for encrypting
+    /// or decrypting the image. For security concerns, using a ramdisk
+    /// like /dev/shm to store the passphrase file is preferable.
+    #[structopt(long)]
+    passphrase_file: Option<PathBuf>,
 
     /// Verbosity. Can be repeated
     #[structopt(short, long, parse(from_occurrences))]
@@ -83,7 +89,9 @@ pub fn extract_image(
 
 impl super::CLI for Extract {
     fn run(self) -> Result<()> {
-        let Self { image_url, output_dir, allow_bad_image_version, verbose: _ } = self;
+        let Self { image_url, output_dir,
+            allow_bad_image_version, passphrase_file, verbose: _
+        } = self;
 
         let output_dir = match output_dir {
             Some(output_dir) => output_dir,
@@ -95,6 +103,10 @@ impl super::CLI for Extract {
             }
         };
 
+        if let Some(ref passphrase_file) = passphrase_file {
+            check_passphrase_file_exists(passphrase_file)?;
+        }
+
         let store = store::from_url(&image_url)?;
         store.prepare(false)?;
 
@@ -102,8 +114,10 @@ impl super::CLI for Extract {
 
         match ImageManifest::fetch_from_store(&*store, allow_bad_image_version)? {
             ManifestFetchResult::Some(img_manifest) => {
-                debug!("Image manifest found: {:?}", img_manifest);
-                extract_image(shard::download_cmds(&img_manifest, &*store), output_dir)?;
+                debug!("Image manifest found: {}", img_manifest);
+                let dl_cmds = shard::download_cmds(
+                    &img_manifest, passphrase_file.as_ref(), &*store)?;
+                extract_image(dl_cmds, output_dir)?;
             }
             ManifestFetchResult::VersionMismatch { fetched, desired } => {
                 bail!("Image manifest found, but has version {} while the expected version is {}. \

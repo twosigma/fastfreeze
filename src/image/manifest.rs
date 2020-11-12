@@ -18,7 +18,8 @@ use crate::{
     consts::*,
     store::{Store, FileExt},
 };
-use super::Compressor;
+use super::{Compression, Encryption};
+use std::fmt;
 
 // The image manifest is what describes how to consume an image.
 // It holds version, shard location, and compression used.
@@ -29,22 +30,24 @@ pub enum ManifestFetchResult {
     NotFound,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ImageManifest {
     pub version: String,
     pub num_shards: u32,
-    pub compressor: Compressor,
+    pub encryption: Option<Encryption>,
+    pub compression: Option<Compression>,
     pub shard_prefix: String,
 }
 
 impl ImageManifest {
     /// Make a new image manifest. The shard_prefix is INVOCATION_ID which is picked at random.
     /// This can make it easier to tie metrics and log files to a specific checkpoint command.
-    pub fn new(num_shards: u32, compressor: Compressor) -> Self {
+    pub fn new(num_shards: u32, encrypt: bool, compression: Option<Compression>) -> Self {
         Self {
             version: String::from(CURRENT_IMG_VERSION),
             shard_prefix: INVOCATION_ID.clone(),
-            compressor,
+            encryption: if encrypt { Some(Encryption::new()) } else { None },
+            compression,
             num_shards,
         }
     }
@@ -83,5 +86,15 @@ impl ImageManifest {
             Some(manifest_json) => Self::from_json(&String::from_utf8_lossy(&manifest_json), allow_bad_image_version)?,
             None => ManifestFetchResult::NotFound,
         })
+    }
+}
+
+impl fmt::Display for ImageManifest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "version={}, num_shards={} compression={} encryption={} prefix={}",
+            self.version, self.num_shards,
+            self.compression.as_ref().map_or_else(|| "none".to_string(), |d| format!("{}", d)),
+            self.encryption.as_ref().map_or_else(|| "none".to_string(), |d| format!("{}", d)),
+            self.shard_prefix)
     }
 }

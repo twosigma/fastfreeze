@@ -29,10 +29,10 @@ use serde::{Serialize, Deserialize};
 use signal::{pthread_sigmask, Signal};
 use crate::{
     consts::*,
-    store,
+    store::{self, Store},
     virt,
     cli::ExitCode,
-    image::{ManifestFetchResult, ImageManifest, shard},
+    image::{ManifestFetchResult, ImageManifest, shard, check_passphrase_file_exists},
     process::{Command, CommandPidExt, ProcessExt, ProcessGroup, Stdio,
               spawn_set_ns_last_pid_server, set_ns_last_pid, MIN_PID},
     metrics::{with_metrics, with_metrics_raw, metrics_error_json},
@@ -99,6 +99,12 @@ pub struct Run {
     #[structopt(long)]
     allow_bad_image_version: bool,
 
+    /// Provide a file containing the passphrase to be used for encrypting
+    /// or decrypting the image. For security concerns, using a ramdisk
+    /// like /dev/shm to store the passphrase file is preferable.
+    #[structopt(long)]
+    passphrase_file: Option<PathBuf>,
+
     /// Dir/file to include in the checkpoint image.
     /// May be specified multiple times. Multiple paths can also be specified colon separated.
     // require_delimiter is set to avoid clap's non-standard way of accepting lists.
@@ -132,6 +138,7 @@ pub struct Run {
 pub struct AppConfig {
     pub image_url: String,
     pub preserved_paths: HashSet<PathBuf>,
+    pub passphrase_file: Option<PathBuf>,
     pub app_clock: Nanos,
     // Used to compute the duration between a restore and a checkpoint, for metrics only.
     pub created_at: SystemTime,
@@ -157,6 +164,7 @@ impl AppConfig {
 fn restore(
     image_url: String,
     mut preserved_paths: HashSet<PathBuf>,
+    passphrase_file: Option<PathBuf>,
     shard_download_cmds: Vec<String>,
     leave_stopped: bool,
 ) -> Result<(Stats, Duration)> {
@@ -200,15 +208,20 @@ fn restore(
 
     // The file system is back, including the application configuration containing user-defined
     // preserved-paths, and application time offset.
-    // We load the app config, add the new preserved_paths, and save it. It will be useful for the
-    // subsequent checkpoint.
+    // We load the app config, add the new preserved_paths, and save it.
+    // It will be useful for the subsequent checkpoints.
+    // Also, we keep the passphrase_file setting if there's one to ensure that
+    // a previously encrypted image remains encrypted. This is normally unecessary, because
+    // if the image was in fact encrypted, we would be using a passphrase_file already.
     let duration_since_checkpoint = {
         let old_config = AppConfig::restore()?;
         preserved_paths.extend(old_config.preserved_paths);
+        let passphrase_file = passphrase_file.or(old_config.passphrase_file);
 
         let config = AppConfig {
             image_url,
             preserved_paths,
+            passphrase_file,
             created_at: SystemTime::now(),
             app_clock: old_config.app_clock,
         };
@@ -350,12 +363,14 @@ fn monitor_app_inner() -> Result<()> {
 fn run_from_scratch(
     image_url: String,
     preserved_paths: HashSet<PathBuf>,
+    passphrase_file: Option<PathBuf>,
     app_cmd: Vec<OsString>,
 ) -> Result<()>
 {
     let config = AppConfig {
         image_url,
         preserved_paths,
+        passphrase_file,
         app_clock: 0,
         created_at: SystemTime::now(),
     };
@@ -382,17 +397,13 @@ fn run_from_scratch(
 }
 
 pub enum RunMode {
-    Restore { shard_download_cmds: Vec<String> },
+    Restore { img_manifest: ImageManifest },
     FromScratch,
 }
 
-pub fn determine_run_mode(image_url: &str, allow_bad_image_version: bool) -> Result<RunMode> {
-    let store = store::from_url(&image_url)?;
-
-    info!("Fetching image manifest for {}", image_url);
-
+pub fn determine_run_mode(store: &dyn Store, allow_bad_image_version: bool) -> Result<RunMode> {
     let fetch_result = with_metrics("fetch_manifest",
-        || ImageManifest::fetch_from_store(&*store, allow_bad_image_version),
+        || ImageManifest::fetch_from_store(store, allow_bad_image_version),
         |fetch_result| match fetch_result {
             ManifestFetchResult::Some(_)              => json!({"manifest": "good",             "run_mode": "restore"}),
             ManifestFetchResult::VersionMismatch {..} => json!({"manifest": "version_mismatch", "run_mode": "run_from_scratch"}),
@@ -402,9 +413,8 @@ pub fn determine_run_mode(image_url: &str, allow_bad_image_version: bool) -> Res
 
     Ok(match fetch_result {
         ManifestFetchResult::Some(img_manifest) => {
-            debug!("Image manifest found: {:?}", img_manifest);
-            let shard_download_cmds = shard::download_cmds(&img_manifest, &*store);
-            RunMode::Restore { shard_download_cmds }
+            debug!("Image manifest found: {}", img_manifest);
+            RunMode::Restore { img_manifest }
         }
         ManifestFetchResult::VersionMismatch { fetched, desired } => {
             info!("Image manifest found, but has version {} while the expected version is {}. \
@@ -455,10 +465,13 @@ impl Run {
     fn run_inner(self) -> Result<()> {
         let Self {
             image_url, app_args, on_app_ready_cmd, no_restore,
-            allow_bad_image_version, preserved_paths, leave_stopped, verbose: _,
-            detach } = self;
+            allow_bad_image_version, passphrase_file, preserved_paths,
+            leave_stopped, verbose: _, detach } = self;
 
         let preserved_paths = preserved_paths.into_iter().collect();
+        if let Some(ref passphrase_file) = passphrase_file {
+            check_passphrase_file_exists(passphrase_file)?;
+        }
 
         // Holding the lock while invoking any process (e.g., `criu_check_cmd`) is
         // preferrable to avoid disturbing another instance of FastFreeze trying
@@ -475,21 +488,28 @@ impl Run {
             // we also prepare the store during restore, because we want to make sure
             // we can checkpoint after a restore.
             trace!("Preparing image store");
-            store::from_url(&image_url)?.prepare(true)?;
+            let store = store::from_url(&image_url)?;
+            store.prepare(true)?;
 
             let run_mode = if no_restore {
                 info!("Running app from scratch as specified with --no-restore");
                 RunMode::FromScratch
             } else {
-                determine_run_mode(&image_url, allow_bad_image_version)
+                info!("Fetching image manifest for {}", image_url);
+                determine_run_mode(&*store, allow_bad_image_version)
                     .context(ExitCode(EXIT_CODE_RESTORE_FAILURE))?
             };
 
             match run_mode {
-                RunMode::Restore { shard_download_cmds } => {
+                RunMode::Restore { img_manifest } => {
+                    let shard_download_cmds = shard::download_cmds(
+                        &img_manifest, passphrase_file.as_ref(), &*store)?;
+
                     with_metrics("restore", ||
-                        restore(image_url, preserved_paths, shard_download_cmds, leave_stopped)
-                            .context(ExitCode(EXIT_CODE_RESTORE_FAILURE)),
+                        restore(
+                            image_url, preserved_paths, passphrase_file,
+                            shard_download_cmds, leave_stopped
+                        ).context(ExitCode(EXIT_CODE_RESTORE_FAILURE)),
                         |(stats, duration_since_checkpoint)|
                             json!({
                                 "stats": stats,
@@ -500,7 +520,7 @@ impl Run {
                 RunMode::FromScratch => {
                     let app_args = app_args.into_iter().map(|s| s.into()).collect();
                     with_metrics("run_from_scratch", ||
-                        run_from_scratch(image_url, preserved_paths, app_args),
+                        run_from_scratch(image_url, preserved_paths, passphrase_file, app_args),
                         |_| json!({}))?;
                 }
             }

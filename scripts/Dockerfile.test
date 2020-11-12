@@ -1,4 +1,4 @@
-FROM debian:9
+FROM debian:10
 
 RUN apt-get update
 RUN apt-get install -y xz-utils libcap2-bin
