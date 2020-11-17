@@ -78,11 +78,11 @@ impl ImageManifest {
     }
 
     pub fn persist_to_store(&self, store: &dyn Store) -> Result<()> {
-        store.file(MANIFEST_FILE_NAME).write(&self.to_json().as_bytes())
+        store.file(MANIFEST_FILE_NAME).write("upload manifest", &self.to_json().as_bytes())
     }
 
     pub fn fetch_from_store(store: &dyn Store, allow_bad_image_version: bool) -> Result<ManifestFetchResult> {
-        Ok(match store.file(MANIFEST_FILE_NAME).try_read()? {
+        Ok(match store.file(MANIFEST_FILE_NAME).try_read("download manifest")? {
             Some(manifest_json) => Self::from_json(&String::from_utf8_lossy(&manifest_json), allow_bad_image_version)?,
             None => ManifestFetchResult::NotFound,
         })

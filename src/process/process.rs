@@ -33,6 +33,7 @@ pub use std::process::{
 use crate::signal::{check_for_pending_sigterm, retry_on_interrupt};
 use super::{
     stderr_logger::StderrLogger,
+    error::StderrTail,
     ProcessError,
 };
 
@@ -141,6 +142,8 @@ impl Process {
     pub fn stdin(&mut self) -> &mut ChildStdin { self.inner.stdin.as_mut().unwrap() }
     pub fn stdout(&mut self) -> &mut ChildStdout { self.inner.stdout.as_mut().unwrap() }
     pub fn stderr(&mut self) -> &mut ChildStderr { self.inner.stderr.as_mut().unwrap() }
+
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> { self.inner.stdin.take() }
 }
 
 pub struct ProcessDropReaper {
@@ -165,6 +168,23 @@ pub struct Output {
 impl Output {
     pub fn ensure_success(&self) -> Result<()> {
         ensure_successful_exit_status(self.status, self.display_cmd.clone(), None)
+    }
+
+    pub fn ensure_success_with_stderr_log(&self, log_prefix: &'static str) -> Result<()> {
+        if self.status.success() {
+            Ok(())
+        } else {
+            let stderr_tail = String::from_utf8_lossy(&self.stderr)
+                .lines()
+                .map(|l| l.into())
+                .collect();
+
+            bail!(ProcessError {
+                exit_status: self.status,
+                display_cmd: self.display_cmd.clone(),
+                stderr_tail: Some(StderrTail { log_prefix, stderr_tail }),
+            });
+        }
     }
 }
 

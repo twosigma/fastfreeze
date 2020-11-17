@@ -26,8 +26,8 @@ use super::stderr_logger::StderrLogger;
 
 #[derive(Debug)]
 pub struct StderrTail {
-    log_prefix: &'static str,
-    stderr_tail: Vec<Box<str>>,
+    pub log_prefix: &'static str,
+    pub stderr_tail: Vec<Box<str>>,
 }
 
 impl From<&StderrLogger> for StderrTail {

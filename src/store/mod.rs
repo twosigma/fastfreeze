@@ -51,18 +51,31 @@ pub trait File {
 // commands to download and upload content.
 pub trait FileExt: File {
     /// Write content to the file, truncating it if necessary.
-    fn write(&self, data: &[u8]) -> Result<()> {
+    fn write(&self, log_prefix: &'static str, data: &[u8]) -> Result<()> {
         let mut p = Command::new_shell(self.upload_shell_cmd())
             .stdin(Stdio::piped())
+            .enable_stderr_logging(log_prefix)
             .spawn()?;
 
-        p.stdin().write_all(data)
-            .context("Failed to write() into the upload process")?;
-        p.wait_for_success()
+        // We are simultaneously writing to stdin and reading stderr.
+        // While we are writing to stdin, the upload shell command might be
+        // blocking on us to drain stderr, leading to a deadlock.
+        // We use a thread to avoid complications. It's a bit overkill, but works.
+
+        // With a scoped thread, we wouldn't need the data copy, but it's okay
+        // we just use it to copy a small json file (the manifest).
+        let data = Vec::from(data);
+        let mut stdin = p.take_stdin().expect("stdin isn't connected");
+        let stdin_write_thread = std::thread::spawn(move || stdin.write_all(&data));
+
+        p.wait_for_success()?;
+
+        stdin_write_thread.join().expect("thread panic")
+            .with_context(|| format!("{}> write to stdin failed", log_prefix))
     }
 
     /// Reads a file. Returns None if it doesn't exist.
-    fn try_read(&self) -> Result<Option<Vec<u8>>> {
+    fn try_read(&self, log_prefix: &'static str) -> Result<Option<Vec<u8>>> {
         let p = Command::new_shell(self.download_shell_cmd())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -74,10 +87,10 @@ pub trait FileExt: File {
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if self.has_not_found_error(&stderr) {
+                trace!("{}> File does not exist. stderr is: {}", log_prefix, stderr);
                 Ok(None)
-            } else  {
-                eprint!("{}", stderr);
-                Err(output.ensure_success().unwrap_err())
+            } else {
+                Err(output.ensure_success_with_stderr_log(log_prefix).unwrap_err())
             }
         }
     }
@@ -109,9 +122,9 @@ mod test {
 
     fn test_store_read_write(store: &Box<dyn Store>) -> Result<()> {
         store.prepare(true)?;
-        store.file("f1.txt").write("hello".as_bytes())?;
-        assert_eq!(store.file("f1.txt").try_read()?, Some("hello".as_bytes().to_vec()));
-        assert_eq!(store.file("none.txt").try_read()?, None);
+        store.file("f1.txt").write("test", "hello".as_bytes())?;
+        assert_eq!(store.file("f1.txt").try_read("read test")?, Some("hello".as_bytes().to_vec()));
+        assert_eq!(store.file("none.txt").try_read("read test")?, None);
         Ok(())
     }
 

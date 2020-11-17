@@ -165,7 +165,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     for (upload_cmd, shard_pipe) in shard_upload_cmds.into_iter().zip(img_streamer.shard_pipes) {
         Command::new_shell(&upload_cmd)
             .stdin(Stdio::from(shard_pipe))
-            .enable_stderr_logging("upload")
+            .enable_stderr_logging("upload shard")
             .spawn()?
             .join(&mut pgrp);
     }

@@ -178,7 +178,7 @@ fn restore(
     for (download_cmd, shard_pipe) in shard_download_cmds.into_iter().zip(img_streamer.shard_pipes) {
         Command::new_shell(&download_cmd)
             .stdout(Stdio::from(shard_pipe))
-            .enable_stderr_logging("download")
+            .enable_stderr_logging("download shard")
             .spawn()?
             .join(&mut pgrp);
     }
