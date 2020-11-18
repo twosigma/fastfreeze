@@ -176,7 +176,7 @@ impl Output {
         } else {
             let stderr_tail = String::from_utf8_lossy(&self.stderr)
                 .lines()
-                .map(|l| l.into())
+                .map(Into::into)
                 .collect();
 
             bail!(ProcessError {

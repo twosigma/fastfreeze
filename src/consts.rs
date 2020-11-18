@@ -22,7 +22,7 @@ use crate::util::gen_random_alphanum_string;
 
 /// The image version must be bumped when libvirttime or libvirtcpuid change,
 /// or when the `ImageManifest` format changes.
-pub const CURRENT_IMG_VERSION: &str = "2020-09-15";
+pub const CURRENT_IMG_VERSION: &str = "2020-11-19";
 
 // We compute the paths at runtime. It improves readability compared to using
 // macros at compile time.
