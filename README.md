@@ -80,7 +80,10 @@ FastFreeze includes the following high-level features:
 * **Compression**: Checkpoint images can be compressed on the fly with lz4 or
   zstd. Setting the `--cpu-budget` option when checkpointing provides ways to
   control the compression algorithm. Compression is parallelized for optimal
-  performance. In the future, we plan to add encryption to images.
+  performance.
+
+* **Encryption**: Checkpoint images can be encypted on the fly with openssl.
+  Setting the `--passphrase-file` option enables encryption using AES-256-CBC.
 
 * **CPUID virtualization**: FastFreeze enables CPU virtualization with
   [libvirtcpuid](https://github.com/twosigma/libvirtcpuid). This enables the
@@ -176,13 +179,13 @@ The following shows an example of the installation of FastFreeze in a Debian
 Docker image.
 
 ```dockerfile
-FROM debian:9
+FROM debian:10
 
 RUN apt-get update
 RUN apt-get install -y curl xz-utils libcap2-bin
 
 RUN set -ex; \
-  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.0.0/fastfreeze-1.0.0.tar.xz | \
+  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.1.0/fastfreeze-1.1.0.tar.xz | \
     tar xJf - -C /opt; \
   ln -s /opt/fastfreeze/fastfreeze_wrapper.sh /usr/local/bin/fastfreeze; \
   fastfreeze install; \
@@ -321,6 +324,9 @@ OPTIONS:
                                     * gs://bucket_name/image_path
                                     * file:image_path
         --on-app-ready <cmd>       Shell command to run once the application is running
+        --passphrase-file <file>   Provide a file containing the passphrase to be used for encrypting or
+                                   decrypting the image. For security concerns, using a ramdisk like
+                                   /dev/shm to store the passphrase file is preferable
         --preserve-path <path>...  Dir/file to include in the checkpoint image.
                                    May be specified multiple times.
                                    Multiple paths can also be specified colon separated
@@ -371,6 +377,10 @@ OPTIONS:
         --num-shards <num-shards>  Level of parallelism. Split the image in multiple shards [default: 4]
         --cpu-budget <cpu-budget>  Amount of CPU at disposal. Possible values are [low, medium, high]. Currently,
                                    `low` skips compression, `medium` uses lz4, and high uses zstd [default: medium]
+        --passphrase-file <file>   Enable image encryption. This points to a file containing a passphrase
+                                   used to encrypt the image. The passphrase should contain at least 256
+                                   bits of entropy
+
     -v, --verbose                  Verbosity. Can be repeated
 
 ENVS:
@@ -394,6 +404,7 @@ OPTIONS:
     -o, --output-dir <output-dir>    Output directory where to extract the image.
                                      Defaults to the last path component of image-url
         --allow-bad-image-version    Allow restoring of images that don't match the version we expect
+    --passphrase-file <file>         Provide a file containing the passphrase to be used for decrypting the image
     -v, --verbose                    Verbosity. Can be repeated
 
 ENVS:
