@@ -56,7 +56,7 @@ DIST_LIBS := \
 	deps/libvirtcpuid/libvirtcpuid.so \
 	deps/libvirttime/libvirttime.so \
 
-DIST_MISC := fastfreeze_wrapper.sh \
+DIST_MISC := scripts/fastfreeze_wrapper.sh \
 
 define add_dist_file
 $(eval SRC_FILE := $(1))

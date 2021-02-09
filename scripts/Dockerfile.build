@@ -28,7 +28,8 @@ RUN touch src/lib.rs src/main.rs
 RUN $CARGO test
 RUN $CARGO build --release
 
-# Package FastFreeze
+# Package FastFreeze.
+# Note: We only copy the files we need to get better build caches with docker
 COPY Makefile .
-COPY scripts/fastfreeze_wrapper.sh .
+COPY scripts/fastfreeze_wrapper.sh scripts/
 RUN make
