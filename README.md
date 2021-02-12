@@ -185,7 +185,7 @@ RUN apt-get update
 RUN apt-get install -y curl xz-utils libcap2-bin
 
 RUN set -ex; \
-  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.1.0/fastfreeze-1.1.0.tar.xz | \
+  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.1.1/fastfreeze-1.1.1.tar.xz | \
     tar xJf - -C /opt; \
   ln -s /opt/fastfreeze/fastfreeze_wrapper.sh /usr/local/bin/fastfreeze; \
   fastfreeze install; \
@@ -197,10 +197,9 @@ and creates `/var/fastfreeze` where files such as logs are kept. Note that
 replacing the system loader is useful even when not doing CPUID virtualization.
 It facilitates the injection of the time virtualiation library into all processes.
 
-The `setcap` command adds the `CAP_SYS_PTRACE` capability to CRIU.
-This may or may not be needed depending on the yama configuration
-`/proc/sys/kernel/yama/ptrace_scope` (see `man ptrace(2)`), or if Kubernetes is
-configured with `CAP_SYS_PTRACE` as ambiant capability.
+The `setcap` command allows CRIU to gain the `CAP_SYS_PTRACE` capability. This
+is not needed if `/proc/sys/kernel/yama/ptrace_scope` (see `man ptrace(2)`) is 0
+on the machine where FastFreeze ends up running on.
 
 ### Tutorial
 
@@ -215,6 +214,8 @@ $ cat > Dockerfile
 $ docker build . -t fastfreeze
 
 # 1) Run the application for the first time
+# In the following, we don't need cap_sys_ptrace, but it makes Docker
+# relax its seccomp filters on kcmp(), which CRIU needs.
 $ docker run \
   --rm -it \
   --user nobody \
