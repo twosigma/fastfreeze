@@ -182,14 +182,13 @@ Docker image.
 FROM debian:10
 
 RUN apt-get update
-RUN apt-get install -y curl xz-utils libcap2-bin
+RUN apt-get install -y curl xz-utils
 
 RUN set -ex; \
-  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.1.0/fastfreeze-1.1.0.tar.xz | \
+  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.1.1/fastfreeze-1.1.1.tar.xz | \
     tar xJf - -C /opt; \
-  ln -s /opt/fastfreeze/fastfreeze_wrapper.sh /usr/local/bin/fastfreeze; \
-  fastfreeze install; \
-  setcap cap_sys_ptrace+eip /opt/fastfreeze/criu
+  ln -s /opt/fastfreeze/fastfreeze /usr/local/bin; \
+  fastfreeze install
 ```
 
 The `install` command overrides the system loader `/lib64/ld-linux-x86-64.so.2`,
@@ -197,10 +196,24 @@ and creates `/var/fastfreeze` where files such as logs are kept. Note that
 replacing the system loader is useful even when not doing CPUID virtualization.
 It facilitates the injection of the time virtualiation library into all processes.
 
-The `setcap` command adds the `CAP_SYS_PTRACE` capability to CRIU.
-This may or may not be needed depending on the yama configuration
-`/proc/sys/kernel/yama/ptrace_scope` (see `man ptrace(2)`), or if Kubernetes is
-configured with `CAP_SYS_PTRACE` as ambiant capability.
+#### Enabling ptrace for CRIU
+
+CRIU, the checkpointing engine, needs ptrace access on the machine. When denied,
+the error `Unable to interrupt task: 1000 (Operation not permitted)` will be shown.
+
+To enable ptrace, there are two options:
+* Disable YAMA restrictions by setting `/proc/sys/kernel/yama/ptrace_scope` to 0
+  on the host where FastFreeze runs. See `man ptrace(2)` for more information.
+* Enable `cap_sys_ptrace` to the CRIU binary by adding the following in the
+  Dockerfile. Note that this makes the CRIU binary secure, disabling 
+  `LD_LIBRARY_PATH` tricks. This means that the FastFreeze installation must be
+  located in `/opt/fastfreeze` as we fallback on `RPATH` ELF tricks in this
+  case. You'll need to provide `CAP_SYS_PTRACE` to the running container.
+
+```dockerfile
+  RUN apt-get install -y libcap2-bin
+  RUN setcap cap_sys_ptrace+eip /opt/fastfreeze/criu
+```
 
 ### Tutorial
 
@@ -215,6 +228,8 @@ $ cat > Dockerfile
 $ docker build . -t fastfreeze
 
 # 1) Run the application for the first time
+# In the following, we don't need cap_sys_ptrace, but it makes Docker
+# relax its seccomp filters on kcmp(), which CRIU needs.
 $ docker run \
   --rm -it \
   --user nobody \
