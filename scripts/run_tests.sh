@@ -23,6 +23,11 @@ echo passphrase > $IMAGE_DIR/encryption_key
 
 docker stop ff || true
 
+sudo bash -c 'echo 0 > /proc/sys/kernel/yama/ptrace_scope'
+
+# In the following, we don't need cap_sys_ptrace, but it makes Docker
+# relax its seccomp filters on kcmp(), which CRIU needs.
+
 docker run \
   --rm \
   --user nobody \

@@ -31,5 +31,5 @@ RUN $CARGO build --release
 # Package FastFreeze.
 # Note: We only copy the files we need to get better build caches with docker
 COPY Makefile .
-COPY scripts/fastfreeze_wrapper.sh scripts/
+COPY scripts/fastfreeze scripts/
 RUN make

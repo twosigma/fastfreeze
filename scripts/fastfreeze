@@ -9,7 +9,7 @@ export FF_APP_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
 
 # Override the PATH and LD_LIBRARY_PATH that fastfreeze should use
 export LD_LIBRARY_PATH=$FF_DIR/lib:$LD_LIBRARY_PATH
-export PATH=$FF_DIR:$PATH
+export PATH=$FF_DIR/bin:$PATH
 
 # You may set the following environment variables
 # FF_APP_VIRT_CPUID_MASK     The CPUID mask to use. See libvirtcpuid documentation for more details
@@ -21,4 +21,4 @@ export PATH=$FF_DIR:$PATH
 # S3_CMD                     Command to access AWS S3. Defaults to 'aws s3'
 # GS_CMD                     Command to access Google Storage. Defaults to 'gsutil'
 
-exec $FF_DIR/fastfreeze "$@"
+exec $FF_DIR/bin/fastfreeze "$@"

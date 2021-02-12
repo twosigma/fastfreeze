@@ -11,8 +11,7 @@ RUN apt-get install -y jq
 
 RUN set -ex; \
   tar xf /tmp/fastfreeze.tar.xz -C /opt; \
-  ln -s /opt/fastfreeze/fastfreeze_wrapper.sh /usr/local/bin/fastfreeze; \
-  fastfreeze install; \
-  setcap cap_sys_ptrace+eip /opt/fastfreeze/criu
+  ln -s /opt/fastfreeze/fastfreeze /usr/local/bin/; \
+  fastfreeze install
 
 WORKDIR /opt/fastfreeze

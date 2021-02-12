@@ -33,9 +33,13 @@ deps/%:
 	$(MAKE) -C deps
 
 DIST_DIR = dist
+DIST_BIN_DIR = $(DIST_DIR)/bin
 DIST_LIB_DIR = $(DIST_DIR)/lib
 
 $(DIST_DIR):
+	mkdir -p $@
+
+$(DIST_BIN_DIR):
 	mkdir -p $@
 
 $(DIST_LIB_DIR):
@@ -56,7 +60,22 @@ DIST_LIBS := \
 	deps/libvirtcpuid/libvirtcpuid.so \
 	deps/libvirttime/libvirttime.so \
 
-DIST_MISC := scripts/fastfreeze_wrapper.sh \
+DIST_MISC := scripts/fastfreeze \
+
+# We assume an installation location. This is only used when the user
+# makes one of the binary a d
+INSTALL_LOCATION=/opt/fastfreeze
+
+# We avoid packaging libc libraries because they work in tandem with the system
+# ELF loader (typically /lib64/ld-linux-x86-64.so.2). We could package the ELF
+# loader, but that ties our installation to something like /opt/fastfreeze,
+# and that's not desirable.
+PACKAGE_SKIP_LIBS := \
+	librt.so.* \
+	libdl.so.* \
+	libpthread.so.* \
+	libc.so.* \
+	ld-linux-*.so.* \
 
 define add_dist_file
 $(eval SRC_FILE := $(1))
@@ -69,7 +88,7 @@ $(DST_FILE): $(SRC_FILE) | $(DST_DIR)
 endef
 
 $(foreach path,$(DIST_BINS),$(eval \
-	$(call add_dist_file,$(path),$(DIST_DIR)) \
+	$(call add_dist_file,$(path),$(DIST_BIN_DIR)) \
 	$(eval DIST_ELF_FILES += $(DST_FILE)) \
 ))
 
@@ -91,21 +110,22 @@ clean:
 	rm -rf target $(DIST_DIR)
 	@echo Dependencies are not cleaned. You may do so with: make -C deps clean
 
+# In the following, we package libraries needed by our binary distribution.
+# Normally, our wrapper script will set LD_LIBRARY_PATH to ensure proper lib
+# loading, but if the user sets setcap/setuid on certain binaries, then
+# these become secure binary. Meaning that LD_LIBRARY_PATH won't work,
+# and $ORIGIN in RPATH won't work either. So we hard-code RPATH to
+# /opt/fastfreeze/lib. It's not great, but it's better than nothing.
 extract-libs: $(DIST_ELF_FILES) | $(DIST_LIB_DIR)
 	ldd $(DIST_ELF_FILES) | sed 's/.*=> \(.*\) .*/\1/;t;d' | \
 		sort -u | \
 		xargs realpath -s | \
 		grep -v $(DIST_LIB_DIR)/ | \
+		grep -v -E /\($$(echo '$(PACKAGE_SKIP_LIBS)' | sed -e 's/ $$//' -e 's/ /|/g' -e 's/\./\\./g' -e 's/\*/.*/g')\)$$ | \
 		xargs -I'{}' cp -L '{}' $(DIST_LIB_DIR)/
 	for file in $$(echo $(DIST_ELF_FILES) $(DIST_LIB_DIR)/* | \
 			tr " " "\n" | sort -u | grep -v 'ld-.*.so'); do \
-		RPATH=`echo $$file | sed -E 's|^$(DIST_DIR)|| ; s|[^/]+/|../|g ; s|[^/]+$$|lib| ; s|^|$$ORIGIN|'`; \
-		: " \
-		We are are doing setcap on criu's binary, and that makes it \
-		secure. Some distro don't interpret $ORIGIN on secure binaries \
-		So we'll hard code /opt/fastfreeze/lib as RPATH \
-		"; \
-		RPATH=/opt/fastfreeze/lib; \
+		RPATH=$(INSTALL_LOCATION)/lib; \
 		echo "Patching rpath=$$RPATH of $$file"; \
 		patchelf --set-rpath $$RPATH $$file ;\
 	done
