@@ -24,7 +24,6 @@ use std::{
 };
 use crate::{
     consts::*,
-    util::strip_prefix,
     process::{Command, Stdio, EnvVars},
 };
 
@@ -69,7 +68,7 @@ fn env_for_virtualization() -> EnvVars {
     for (key, value) in env::vars_os() {
         // The env var key is all ASCII, it's okay to use to_string_lossy()
         let key = key.to_string_lossy();
-        if let Some(key) = strip_prefix(&key, "FF_APP_INJECT_") {
+        if let Some(key) = key.strip_prefix("FF_APP_INJECT_") {
             if key == "LD_PRELOAD" {
                 for path in env::split_paths(&value) {
                     ld_preloads.push(path);

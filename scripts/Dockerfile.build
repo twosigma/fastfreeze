@@ -20,6 +20,7 @@ RUN set -ex; \
 
 # Build dependencies (CRIU, rust toolchain, libvirtcpuid, etc.)
 COPY deps deps
+# We clean first because we might have a copy of the host compiled binaries
 RUN make -C deps clean && make -C deps -j4
 ENV CARGO=/root/.cargo/bin/cargo
 
@@ -31,13 +32,13 @@ RUN set -ex; \
   mkdir src; \
   echo "" > src/lib.rs; \
   echo "fn main() {}" > src/main.rs; \
-  $CARGO test; \
+  $CARGO test --release; \
   $CARGO build --release;
 
 # Build FastFreeze
 COPY src src
 RUN touch src/lib.rs src/main.rs
-RUN $CARGO test
+RUN $CARGO test --release
 RUN $CARGO build --release
 
 # Package FastFreeze.

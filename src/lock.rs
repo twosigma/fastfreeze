@@ -55,8 +55,7 @@ pub fn file_lock(path: &Path, timeout: Option<Instant>, exclusive: bool)
     };
 
     let file = fs::File::create(path)
-        .with_context(|| format!("Failed to create lock file {}. \
-                                  Run `fastfreeze install` first", path.display()))?;
+        .with_context(|| format!("Failed to create lock file {}", path.display()))?;
 
     trace!("Waiting to acquire file lock at {}", path.display());
 

@@ -12,8 +12,8 @@
 #       See the License for the specific language governing permissions and
 #       limitations under the License.
 
-#BUILD := debug
-BUILD := release
+BUILD := debug
+#BUILD := release
 
 BUILD_FLAGS :=
 ifeq ($(BUILD),release)
@@ -63,7 +63,8 @@ DIST_LIBS := \
 DIST_MISC := scripts/fastfreeze \
 
 # We assume an installation location. This is only used when the user
-# makes one of the binary a d
+# makes one of the binary secure (like criu, or set_ns_last_pid) via
+# setuid/setcap. See more info on the comment near extract-libs
 INSTALL_LOCATION=/opt/fastfreeze
 
 # We avoid packaging libc libraries because they work in tandem with the system
@@ -75,6 +76,7 @@ PACKAGE_SKIP_LIBS := \
 	libdl.so.* \
 	libpthread.so.* \
 	libc.so.* \
+	libm.so.* \
 	ld-linux-*.so.* \
 
 define add_dist_file
