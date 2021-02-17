@@ -14,13 +14,12 @@
 
 use anyhow::Result;
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
     error::Error,
     fmt::Display,
+    fs::File, io::{BufReader, ErrorKind},
+    path::Path,
     result::Result as StdResult,
-    io::{BufReader, ErrorKind},
-    fs::File,
-    path::Path
+    sync::atomic::{AtomicBool, Ordering}
 };
 use std::io::prelude::*;
 use std::collections::HashSet;
@@ -72,10 +71,7 @@ pub trait IsErrorInterrupt {
 
 impl IsErrorInterrupt for nix::Error {
     fn is_interrupt(&self) -> bool {
-        match &self {
-            Self::Sys(errno) if *errno == Errno::EINTR => true,
-            _ => false
-        }
+        matches!(&self, Self::Sys(errno) if *errno == Errno::EINTR)
     }
 }
 
@@ -112,7 +108,7 @@ pub fn retry_on_interrupt<R,E>(mut f: impl FnMut() -> StdResult<R,E>) -> StdResu
     }
 }
 
-fn get_children(pid: i32) -> Result<Vec<i32>> {
+fn get_children(pid: Pid) -> Result<Vec<Pid>> {
     let task_dir = Path::new("/proc").join(pid.to_string()).join("task");
     let mut children_str = String::new();
     // We are okay to fail to open the task directory. That would mean that the
@@ -129,12 +125,12 @@ fn get_children(pid: i32) -> Result<Vec<i32>> {
     }
 
     Ok(children_str.trim().split_whitespace()
-        .map(|pid| pid.parse().expect("non-numeric pid"))
+        .map(|pid| Pid::from_raw(pid.parse::<i32>().expect("non-numeric pid")))
         .collect())
 }
 
-fn get_process_tree(root_pid: i32) -> Result<Vec<i32>> {
-    fn get_process_tree_inner(pid: i32, pids: &mut Vec<i32>) -> Result<()> {
+fn get_process_tree(root_pid: Pid) -> Result<Vec<Pid>> {
+    fn get_process_tree_inner(pid: Pid, pids: &mut Vec<Pid>) -> Result<()> {
         pids.push(pid);
         for child in get_children(pid)? {
             get_process_tree_inner(child, pids)?;
@@ -149,7 +145,7 @@ fn get_process_tree(root_pid: i32) -> Result<Vec<i32>> {
 
 /// Kill an entire process group. It is not atomic.
 /// Tasks may appear while we are traversing the tree.
-pub fn kill_process_tree(root_pid: i32, signal: Signal) -> Result<()> {
+pub fn kill_process_tree(root_pid: Pid, signal: Signal) -> Result<()> {
     // The application is running under a process group (pid=APP_ROOT_PID)
     // Normally we should be able to just kill that, but because the application
     // can call setsid() and setpgrp(), then we might not get processes as process
@@ -164,7 +160,7 @@ pub fn kill_process_tree(root_pid: i32, signal: Signal) -> Result<()> {
                 // lines are of the format "Key:\tValue"
                 // The NSpgid line may have multiple pids separated with a \t. We only
                 // care about the first one, hence the .. at the end of the pattern match.
-                if let &[key, value, ..] = &*line?.split(":\t").collect::<Vec<_>>() {
+                if let [key, value, ..] = *line?.split(":\t").collect::<Vec<_>>() {
                     if key == "NSpgid" {
                         pgrp_pids.insert(value.parse().expect("non-numeric pid"));
                         break; // stop reading the status file, we have what we want.

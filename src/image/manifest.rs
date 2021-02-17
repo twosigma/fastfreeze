@@ -46,7 +46,7 @@ impl ImageManifest {
         Self {
             version: String::from(CURRENT_IMG_VERSION),
             shard_prefix: INVOCATION_ID.clone(),
-            encryption: if encrypt { Some(Encryption::new()) } else { None },
+            encryption: if encrypt { Some(Encryption::default()) } else { None },
             compression,
             num_shards,
         }

@@ -26,6 +26,7 @@ pub mod filesystem;
 pub mod image_streamer;
 pub mod lock;
 pub mod signal;
+pub mod container;
 
 #[macro_use]
 extern crate anyhow;
@@ -60,7 +61,7 @@ fn main() {
         trap_sigterm_and_friends()?;
 
         let opts = cli::Opts::from_args();
-        opts.init_logger();
+        opts.init_logger()?;
         opts.run()
     }
 
