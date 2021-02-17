@@ -50,6 +50,7 @@ pub fn tar_cmd(preserved_paths: HashSet<PathBuf>, stdout: fs::File) -> Command {
         "--file", "-",
     ])
         .arg("--exclude").arg(&*NO_PRESERVE_FF_DIR)
+        .arg("--exclude").arg(&*CONTAINERS_DIR)
         .args(&preserved_paths)
         .arg(&*FF_DIR)
         .stdout(Stdio::from(stdout));

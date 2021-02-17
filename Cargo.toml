@@ -1,6 +1,6 @@
 [package]
 name = "fastfreeze"
-version = "1.0.0"
+version = "1.2.0"
 authors = ["Nicolas Viennot <Nicolas.Viennot@twosigma.com>"]
 edition = "2018"
 description = "Turn-key solution for checkpoint/restore"

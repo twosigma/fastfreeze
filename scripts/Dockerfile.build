@@ -8,6 +8,7 @@ RUN apt-get install -y build-essential pkg-config sudo curl git python3
 
 # Build dependencies (CRIU, rust toolchain, libvirtcpuid, etc.)
 COPY deps deps
+# We clean first because we might have a copy of the host compiled binaries
 RUN make -C deps clean && make -C deps -j4
 ENV CARGO=/root/.cargo/bin/cargo
 

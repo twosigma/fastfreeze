@@ -14,36 +14,35 @@
 
 use anyhow::{Result, Context};
 use std::{
-    time::{SystemTime, Duration},
+    collections::HashSet,
     ffi::OsString,
-    path::PathBuf,
-    fs, collections::HashSet
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, Duration}
 };
 use nix::{
-    sys::signal::{self, kill, SigmaskHow, SigSet},
-    sys::wait::{wait, WaitStatus},
+    sys::signal,
     unistd::Pid,
 };
 use structopt::StructOpt;
 use serde::{Serialize, Deserialize};
-use signal::{pthread_sigmask, Signal};
 use crate::{
     consts::*,
     store::{self, Store},
     virt,
-    cli::ExitCode,
+    cli::{ExitCode, install},
     image::{ManifestFetchResult, ImageManifest, shard, check_passphrase_file_exists},
     process::{Command, CommandPidExt, ProcessExt, ProcessGroup, Stdio,
-              spawn_set_ns_last_pid_server, set_ns_last_pid, MIN_PID},
+              spawn_set_ns_last_pid_server, set_ns_last_pid, monitor_child, MIN_PID},
     metrics::{with_metrics, with_metrics_raw, metrics_error_json},
     signal::kill_process_tree,
     util::JsonMerge,
     filesystem,
     image_streamer::{Stats, ImageStreamer},
     lock::with_checkpoint_restore_lock,
+    container,
     criu,
 };
-use libc::c_int;
 use virt::time::Nanos;
 
 
@@ -76,13 +75,15 @@ pub struct Run {
     ///   * s3://bucket_name/image_path {n}
     ///   * gs://bucket_name/image_path {n}
     ///   * file:image_path
+    /// It defaults to file:$HOME/.fastfreeze/<app_name>
     // {n} means new line in the CLI's --help command
-    #[structopt(long, name="url")]
-    image_url: String,
+    #[structopt(short, long, name="url")]
+    image_url: Option<String>,
 
     /// Application arguments, used when running the app from scratch.
     /// Ignored during restore.
     // Note: Type should be OsString, but structopt doesn't like it
+    // Also, we wish to pass min_values=1, but it's not working.
     #[structopt()]
     app_args: Vec<String>,
 
@@ -128,6 +129,17 @@ pub struct Run {
     // tricks to what CRIU does to monitor the process, which is to use ptrace.
     #[structopt(long, hidden=true)]
     detach: bool,
+
+    /// Specify the application name. This is used to distinguish applications
+    /// when running multiple ones. The default is the file name of the image-url.
+    /// Note: application specific files are located in /tmp/fastfreeze/<app_name>.
+    #[structopt(short="n", long)]
+    app_name: Option<String>,
+
+    /// Forbit the creation of a container to run the application.
+    /// This is the default when using Docker/Kubernetes in non-privileged environment.
+    #[structopt(long)]
+    no_container: bool,
 }
 
 /// `AppConfig` is created during the run command, and updated during checkpoint.
@@ -292,72 +304,13 @@ fn restore(
     // We might want to check that we are the parent of the process with pid APP_ROOT_PID,
     // otherwise, we might be killing an innocent process. But that would be racy anyways.
     if let Err(e) = pgrp.wait_for_success() {
-        let _ = kill_process_tree(APP_ROOT_PID, signal::SIGKILL);
+        let _ = kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGKILL);
         return Err(e);
     }
 
     info!("Application is ready, restore took {:.1}s", START_TIME.elapsed().as_secs_f64());
 
     Ok((stats, duration_since_checkpoint))
-}
-
-/// `monitor_app()` assumes the init role. We do the following:
-/// 1) We proxy signals we receive to our child pid=APP_ROOT_PID.
-/// 2) We reap processes that get reparented to us.
-/// 3) When APP_ROOT_PID dies, we return an error that contains the appropriate exit_code.
-fn monitor_app() -> Result<()> {
-    match monitor_app_inner() {
-        Err(e) if ExitCode::from_error(&e) == 0 => Ok(()),
-        other => other,
-    }
-}
-fn monitor_app_inner() -> Result<()> {
-    for sig in Signal::iterator() {
-        // We don't forward SIGCHLD, and neither `FORBIDDEN` signals (e.g.,
-        // SIGSTOP, SIGFPE, SIGKILL, ...)
-        if sig == Signal::SIGCHLD || signal_hook::FORBIDDEN.contains(&(sig as c_int)) {
-            continue;
-        }
-
-        // Forward signal to our child.
-        // The `register` function is unsafe because one could call malloc(),
-        // and deadlock the program. Here we call kill() which is safe.
-        unsafe {
-            signal_hook::register(sig as c_int, move || {
-                let _ = kill(Pid::from_raw(APP_ROOT_PID), sig);
-            })?;
-        }
-    }
-    pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&SigSet::all()), None)?;
-
-    // Helper function used in the loop
-    fn child_exited<F: Fn() -> anyhow::Error>(pid: Pid, app_exited_f: F) -> Result<()> {
-        if pid.as_raw() == APP_ROOT_PID {
-            // kill remaining orphans: They belong to the process group that we
-            // made with setsid() in run_from_scratch().
-            // TODO Check if that's actually necessary.
-            let _ = kill_process_tree(APP_ROOT_PID, signal::SIGKILL);
-            Err(app_exited_f())
-        } else {
-            Ok(())
-        }
-    }
-
-    loop {
-        match wait()? {
-            WaitStatus::Exited(pid, exit_status) =>
-                child_exited(pid, || {
-                    anyhow!("Application exited with exit_code={}", exit_status)
-                        .context(ExitCode(exit_status as u8))
-                })?,
-            WaitStatus::Signaled(pid, signal, _core_dumped) =>
-                child_exited(pid, || {
-                    anyhow!("Application caught fatal signal {}", signal)
-                        .context(ExitCode(128 + signal as u8))
-                })?,
-            _ => {},
-        };
-    }
 }
 
 fn run_from_scratch(
@@ -379,6 +332,7 @@ fn run_from_scratch(
     virt::time::ConfigPath::default().write_intial()?;
     virt::enable_system_wide_virtualization()?;
 
+    ensure!(!app_cmd.is_empty(), "Error: application command must be specified");
     let mut cmd = Command::new(app_cmd);
     if let Some(path) = std::env::var_os("FF_APP_PATH") {
         cmd.env_remove("FF_APP_PATH")
@@ -388,7 +342,19 @@ fn run_from_scratch(
         cmd.env_remove("FF_APP_LD_LIBRARY_PATH")
            .env("LD_LIBRARY_PATH", library_path);
     }
-    cmd.setsid();
+
+    cmd.env("FASTFREEZE", "1");
+
+    // We like to set the application in a process group so we can signal it better,
+    // including its children. We don't do setsid() because it prevents the application
+    // from controlling the terminal and do job control for interactive environments.
+    cmd.setpgrp();
+
+    // If we reparent orphans of the application, they will be invisible from CRIU
+    // when it tries to checkpoint the application. That's bad. Instead, we make sure
+    // the application root process reparents the orphans.
+    cmd.set_child_subreaper();
+
     cmd.spawn_with_pid(APP_ROOT_PID)?;
 
     info!("Application is ready, started from scratch");
@@ -423,11 +389,12 @@ pub fn determine_run_mode(store: &dyn Store, allow_bad_image_version: bool) -> R
             RunMode::FromScratch
         }
         ManifestFetchResult::NotFound => {
-            info!("Image manifest not found, running application from scratch");
+            debug!("Image manifest not found, running application from scratch");
             RunMode::FromScratch
         }
     })
 }
+
 
 fn ensure_non_conflicting_pid() -> Result<()> {
     // We don't want to use a PID that could be potentially used by the
@@ -440,6 +407,34 @@ fn ensure_non_conflicting_pid() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn is_app_running() -> bool {
+    Path::new("/proc").join(APP_ROOT_PID.to_string()).exists()
+}
+
+fn default_image_name(app_args: &[String]) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn program_name(cmd: &str) -> String {
+        // unwrap() is fine, we'll error earlier if cmd is empty.
+        cmd.split('/').last().unwrap().to_string()
+    }
+
+    match app_args.len() {
+        0 => unreachable!(),
+        1 => program_name(&app_args[0]),
+        _ =>  {
+            let hash = {
+                let mut hasher = DefaultHasher::new();
+                app_args.hash(&mut hasher);
+                hasher.finish()
+            };
+
+            format!("{}-{:04x}", program_name(&app_args[0]), hash & 0xFFFF)
+        }
+    }
 }
 
 impl super::CLI for Run {
@@ -466,7 +461,52 @@ impl Run {
         let Self {
             image_url, app_args, on_app_ready_cmd, no_restore,
             allow_bad_image_version, passphrase_file, preserved_paths,
-            leave_stopped, verbose: _, detach } = self;
+            leave_stopped, verbose: _, detach, app_name, no_container } = self;
+
+        ensure!(!app_args.is_empty() && !app_args[0].is_empty(),
+                "Please provide a command to run");
+
+        let can_create_container = container::can_create()?;
+
+        let image_url = match image_url {
+            Some(image_url) => image_url,
+            None => {
+                // We don't want to use a default image-url location when we
+                // can't create containers. We are most likely in docker/kubernetes,
+                // and the file system is going to disappear as soon as the container
+                // shuts down.
+                ensure!(can_create_container,
+                    "Please provide a checkpoint image location with \
+                    `--image-url file:/persistant_volume/image`");
+
+                let image_path = DEFAULT_IMAGE_DIR.join(default_image_name(&app_args));
+                let image_url = format!("file:{}", image_path.display());
+                info!("image-url is {}", image_url);
+                image_url
+            }
+        };
+
+        let default_app_name = ||
+            image_url
+            .split('/')
+            .filter(|c| !c.is_empty())
+            .last()
+            .unwrap_or("default"); // unwrap() should never fail, but we never know.
+
+        // Note: the following may fork a child to enter the new PID namespace,
+        // The parent will be kept running to monitor the child.
+        // The execution continues as the child process.
+        match (app_name, no_container, can_create_container, install::is_ff_installed()?) {
+            (Some(_),    true,  _,         _) => bail!("--app-name and --no-container are mutually exclusive"),
+            (_,          true,  _,     false) => bail!("`fastfreeze install` must first be executed"),
+            (_,          _,     false, false) => bail!("`fastfreeze install` must first be executed \
+                                                        as containers cannot be created (/proc is protected)"),
+            (Some(name), false, true,      _) => container::create(&name)?,
+            (None,       false, true,      _) => container::create(default_app_name())?,
+            (Some(_),    _,     false,  true) => bail!("--app-name cannot be used \
+                                                        as containers cannot be created (/proc is protected)"),
+            (None,       _,     _,      true) => {}, // We are most likely running in docker/kubernetes
+        };
 
         let preserved_paths = preserved_paths.into_iter().collect();
         if let Some(ref passphrase_file) = passphrase_file {
@@ -492,10 +532,10 @@ impl Run {
             store.prepare(true)?;
 
             let run_mode = if no_restore {
-                info!("Running app from scratch as specified with --no-restore");
+                debug!("Running app from scratch (--no-restore)");
                 RunMode::FromScratch
             } else {
-                info!("Fetching image manifest for {}", image_url);
+                debug!("Fetching image manifest for {}", image_url);
                 determine_run_mode(&*store, allow_bad_image_version)
                     .context(ExitCode(EXIT_CODE_RESTORE_FAILURE))?
             };
@@ -536,7 +576,7 @@ impl Run {
 
         // detach is only used for integration tests
         if !detach {
-            monitor_app()?;
+            monitor_child(Pid::from_raw(APP_ROOT_PID))?;
         }
 
         Ok(())
