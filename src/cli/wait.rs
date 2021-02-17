@@ -16,7 +16,10 @@ use anyhow::Result;
 use std::time::{Instant, Duration};
 use structopt::StructOpt;
 use serde::Serialize;
-use crate::lock::checkpoint_restore_lock;
+use crate::{
+    container,
+    lock::checkpoint_restore_lock,
+};
 
 
 /// Wait for checkpoint or restore to finish
@@ -29,12 +32,20 @@ pub struct Wait {
     /// Verbosity. Can be repeated
     #[structopt(short, long, parse(from_occurrences))]
     pub verbose: u8,
+
+    /// Target the specified application. See the run command help about
+    /// --app-name for more details.
+    #[structopt()]
+    app_name: Option<String>,
 }
 
 impl super::CLI for Wait {
     fn run(self) -> Result<()> {
-        let Self { timeout, verbose: _ } = self;
+        let Self { timeout, app_name, verbose: _ } = self;
         let timeout = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t));
+
+        container::maybe_nsenter_app(app_name.as_ref())?;
+
         let _lock_guard = checkpoint_restore_lock(timeout, false)?;
         Ok(())
     }

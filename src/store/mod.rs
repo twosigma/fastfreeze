@@ -102,7 +102,7 @@ impl FileExt for dyn File {}
 pub fn from_url(url_str: &str) -> Result<Box<dyn Store>> {
     Ok(match Url::parse(url_str) {
         Err(ParseError::RelativeUrlWithoutBase) => {
-            ensure!(url_str.starts_with("/"),
+            ensure!(url_str.starts_with('/'),
                 "Please use an absolute path for the image path");
             Box::new(local::Store::new(url_str))
         },

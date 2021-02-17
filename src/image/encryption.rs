@@ -26,8 +26,8 @@ pub struct Encryption {
 }
 
 impl Encryption {
-    pub fn new() -> Self {
-        Self { cipher: DEFAULT_ENCRYPTION_CIPHER.to_string() }
+    pub fn new(cipher: String) -> Self {
+        Self { cipher }
     }
 
     pub fn encrypt_cmd(&self, passphrase_file: &Path) -> String {
@@ -38,6 +38,12 @@ impl Encryption {
     pub fn decrypt_cmd(&self, passphrase_file: &Path) -> String {
         format!("openssl enc -d -{} -pbkdf2 -pass file:{}",
             self.cipher, passphrase_file.display())
+    }
+}
+
+impl Default for Encryption {
+    fn default() -> Self {
+        Self::new(DEFAULT_ENCRYPTION_CIPHER.to_string())
     }
 }
 

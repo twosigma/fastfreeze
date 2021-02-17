@@ -267,7 +267,7 @@ impl<'a> ConfigPath<'a> {
                     // Read the current timespec, adjust it, and write it back
                     let mut offset = read_timespec(&mut config_file)?;
                     offset += old_to_new_time_offset;
-                    write_timespec_at(&mut config_file, offset, fpos)?;
+                    write_timespec_at(&config_file, offset, fpos)?;
                 }
 
                 pid += 1;

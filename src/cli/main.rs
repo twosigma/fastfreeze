@@ -85,15 +85,14 @@ impl Opts {
     fn use_log_file(&self) -> bool {
         // Persisting a log file is helpful to carry the history of the
         // application in the checkpointed image.
-        match self.command {
+        matches!(self.command, 
             Command::Run(_) |
-            Command::Checkpoint(_) => true,
-            _ => false,
-        }
+            Command::Checkpoint(_)
+        )
     }
 
-    pub fn init_logger(&self) {
-        logger::init(self.log_level(), self.log_prefix(), self.use_log_file());
+    pub fn init_logger(&self) -> Result<()> {
+        logger::init(self.log_level(), self.log_prefix(), self.use_log_file())
     }
 }
 

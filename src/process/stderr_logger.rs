@@ -114,6 +114,6 @@ impl StderrLogger {
     pub fn get_stderr_tail(&self) -> Vec<Box<str>> {
         // We do a copy, and that seems inefficient, but that simplifies the error
         // code compared to having an Rc<>. This code path is not performance critical.
-        self.backlog.iter().map(|line| line.clone()).collect()
+        self.backlog.iter().cloned().collect()
     }
 }

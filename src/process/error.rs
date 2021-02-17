@@ -53,7 +53,7 @@ impl ProcessError {
                 "exit_status": self.formatted_exit_status(),
                 "log": &st.stderr_tail,
             }
-        })).unwrap_or(json!({}))
+        })).unwrap_or_else(|| json!({}))
     }
 
     pub fn formatted_exit_status(&self) -> String {

@@ -16,7 +16,7 @@ use anyhow::{Result, Context};
 use std::{
     io::Result as IoResult,
     io::Error as IoError,
-    os::unix::io::AsRawFd,
+    os::unix::io::{RawFd, AsRawFd},
     ffi::{OsString, OsStr},
     collections::HashMap,
     process::Command as StdCommand,
@@ -24,9 +24,14 @@ use std::{
 };
 use nix::{
     fcntl::{fcntl, FcntlArg, FdFlag, OFlag},
-    unistd::setsid,
+    unistd::{Pid, getpid, getsid, setpgid, tcsetpgrp},
+    sys::termios::tcgetsid,
+    sys::signal::{Signal, pthread_sigmask, SigmaskHow, SigSet},
 };
-use crate::util::Pipe;
+use crate::{
+    container::get_tty_fds,
+    util::Pipe,
+};
 use super::Process;
 
 // We re-export these, as they are part of our API
@@ -38,10 +43,10 @@ pub type EnvVars = HashMap<OsString, OsString>;
 
 // We wrap the standard library `Command` to provide additional features:
 // * Logging of the command executed, and failures
-// * set_pgrp()
+// * setpgrp()
 // We have to delegate a few methods to the inner `StdCommand`, which makes it a bit verbose.
 // We considered the subprocess crate, but it wasn't very useful, and it lacked
-// the crucial feature of pre_exec() that the standard library has for doing setsid().
+// the crucial feature of pre_exec() that the standard library has for doing setpgrp().
 
 pub struct Command {
     inner: StdCommand,
@@ -92,17 +97,68 @@ impl Command {
         self
     }
 
-    pub fn setsid(&mut self) -> &mut Self {
-        unsafe {
-            self.pre_exec(|| match setsid() {
-                Err(e) => {
-                    error!("Failed to setuid(): {}", e);
-                    // Only errno is propagated back to the parent
-                    Err(IoError::last_os_error())
-                },
-                Ok(_) => Ok(()),
-            })
+    pub fn setpgrp(&mut self) -> &mut Self {
+        // We like to create a process group for the application to better kill
+        // the application tree This is done with the setpgid() above.
+        // As we have a new process group, we need to set it to be the
+        // foreground process group of the terminal
+        // If the application is bash for example, it matters, it tests if
+        // current.pgrp == tcgetpgrp().
+        // Note that we don't want to create a new session (setsid()) because we
+        // have a single terminal and the application should just be another job
+        // among all others.
+
+        fn set_terminal_pgrp(tty_fd: RawFd) -> Result<()> {
+            let tcsid = tcgetsid(tty_fd).context("tcgetsid() failed")?;
+            let sid = getsid(None).context("getsid() failed")?;
+
+            // if the session ids, there's no point in trying. It will fail.
+            if tcsid == sid {
+                // We block some terminal signals, otherwise we get stopped
+                // when executing tcsetgrp().
+                let mut tsigs = SigSet::empty();
+                tsigs.add(Signal::SIGTSTP);
+                tsigs.add(Signal::SIGTTIN);
+                tsigs.add(Signal::SIGTTOU);
+                pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&tsigs), None)
+                    .context("Failed to block terminal signals")?;
+                tcsetpgrp(tty_fd, getpid()).context("tcsetpgrp() failed")?;
+                pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&tsigs), None)
+                    .context("Failed to unblock terminal signals")?;
+            }
+
+            Ok(())
         }
+
+        let pre_exec_fn = move || {
+            if let Err(e) = setpgid(Pid::from_raw(0), Pid::from_raw(0)) {
+                error!("setpgid() failed: {}", e);
+                return Err(IoError::last_os_error());
+            }
+
+            // We keep going if the terminal is misconfigured. It's most likely not fatal.
+            if let Some(tty_fd) = get_tty_fds().into_iter().next() {
+                if tcgetsid(tty_fd) == getsid(None) {
+                    if let Err(e) = set_terminal_pgrp(tty_fd) {
+                        error!("Failed to set the terminal foreground process group: {}", e);
+                    }
+                }
+            }
+
+            Ok(())
+        };
+        unsafe { self.pre_exec(pre_exec_fn) }
+    }
+
+    pub fn set_child_subreaper(&mut self) -> &mut Self {
+        let pre_exec_fn = || {
+            let res = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER) };
+            if let Err(e) = nix::errno::Errno::result(res) {
+                error!("Failed to set PR_SET_CHILD_SUBREAPER, proceeding anyways: {}", e);
+            }
+            Ok(())
+        };
+        unsafe { self.pre_exec(pre_exec_fn) }
     }
 
     pub fn show_cmd_on_spawn(&mut self, value: bool) -> &mut Self {
@@ -154,6 +210,7 @@ impl Command {
         { self.inner.stdout(cfg); self }
     pub fn stderr<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Command
         { self.inner.stderr(cfg); self }
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn pre_exec<F>(&mut self, f: F) -> &mut Command
         where
         F: FnMut() -> IoResult<()> + Send + Sync + 'static
