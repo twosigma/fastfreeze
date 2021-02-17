@@ -26,6 +26,7 @@ pub mod filesystem;
 pub mod image_streamer;
 pub mod lock;
 pub mod signal;
+pub mod container;
 
 #[macro_use]
 extern crate anyhow;

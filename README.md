@@ -111,9 +111,12 @@ FastFreeze includes the following high-level features:
 
 FastFreeze does not use privileged operations. This creates the following drawbacks:
 
-* FastFreeze must run within a Linux container (e.g., Kubernetes, Docker). This
-  guarantees that there are no PID conflicts. The container image must remain
-  unchanged when migrating an application to a different container.
+* FastFreeze must run within a Linux container. FastFreeze has the ability to
+  create its own via `--container name`, or use an existing one (e.g.,
+  Kubernetes, Docker). This guarantees that there are no PID conflicts.
+  The file system must remain unchanged when migrating an application to a
+  different container. This is typically achieved by using the same container
+  image.
 
 * The network connections are dropped upon restore. We rely on the application
   to be tolerant to network failures and reconnect to needed services.
@@ -154,7 +157,7 @@ FastFreeze supports most Linux applications, with some restrictions:
   script with `sudo` is a problem.
 
 * On some systems, apparmor can prevent the execution of certain application
-  such as `man` because we relocate the system ld.so at `/var/fastfreeze/run`
+  such as `man` because we relocate the system ld.so at `/var/tmp/fastfreeze/run`
   which may not be in the white-listed path of executable mmap files. This is
   not an issue in practice.
 
@@ -168,12 +171,37 @@ FastFreeze supports most Linux applications, with some restrictions:
 * Checkpoint images are not managed by FastFreeze. Pruning old images is not in
   the scope of FastFreeze.
 
-## Usage
+## Usage for running on a regular machine
 
 ### Installation
 
-FastFreeze is distributed in a self-contained 4MB package that needs to be
-extracted in `/opt/fastfreeze`.
+FastFreeze is distributed in a self-contained 5MB package that can be extracted
+anywhere.
+
+```bash
+# might be needed to download and extract the archive
+sudo apt-get install -y curl xz-utils
+
+# Select the installation location. You may pick something like your home
+# directory or /opt
+cd ~
+
+# This creates a fastfreeze directory in the current directory
+curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.3.0-rc2/fastfreeze-1.3.0-rc2.tar.xz | tar xJf -
+
+# Optionally, you can make a fastfreeze symlink in ~/bin or /usr/local/bin for easy access.
+ln -s $(pwd)/fastfreeze/fastfreeze ~/bin
+
+# Confirm fastfreeze is working
+fastfreeze/fastfreeze run sleep 60
+```
+
+## Usage for running in Docker / Kubernetes
+
+### Installation
+
+FastFreeze is distributed in a self-contained 5MB package that prefers to be
+extracted in `/opt/fastfreeze` (see more details below for why).
 
 The following shows an example of the installation of FastFreeze in a Debian
 Docker image.
@@ -185,14 +213,14 @@ RUN apt-get update
 RUN apt-get install -y curl xz-utils
 
 RUN set -ex; \
-  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.1.1/fastfreeze-1.1.1.tar.xz | \
+  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.3.0-rc2/fastfreeze-1.3.0-rc2.tar.xz | \
     tar xJf - -C /opt; \
   ln -s /opt/fastfreeze/fastfreeze /usr/local/bin; \
   fastfreeze install
 ```
 
 The `install` command overrides the system loader `/lib64/ld-linux-x86-64.so.2`,
-and creates `/var/fastfreeze` where files such as logs are kept. Note that
+and creates `/var/tmp/fastfreeze` where files such as logs are kept. Note that
 replacing the system loader is useful even when not doing CPUID virtualization.
 It facilitates the injection of the time virtualiation library into all processes.
 
