@@ -1,6 +1,6 @@
 # The change of these two variables must be reflected in ../src/consts.rs
-INTERPOSED_LD_PATH=/var/fastfreeze/run/ld-linux-x86-64.so.2
-LD_INJECT_ENV_PATH=/var/fastfreeze/ld-inject.env
+INTERPOSED_LD_PATH=/var/tmp/fastfreeze/run/ld-linux-x86-64.so.2
+LD_INJECT_ENV_PATH=/var/tmp/fastfreeze/ld-inject.env
 
 RUSTUP_DEP_FILE=.deps-rustup-$(shell hostname)
 $(RUSTUP_DEP_FILE):
@@ -27,7 +27,7 @@ BUILDS := \
 
 .PHONY: $(BUILDS) clean
 
-all: $(BUILDS)
+all: $(BUILDS) $(DEPS_FILE) $(RUSTUP_DEP_FILE)
 
 build_criu: | $(DEPS_FILE)
 	$(MAKE) -C criu criu

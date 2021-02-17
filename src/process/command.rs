@@ -24,9 +24,13 @@ use std::{
 };
 use nix::{
     fcntl::{fcntl, FcntlArg, FdFlag, OFlag},
-    unistd::setsid,
+    unistd::{Pid, getpid, setpgid, tcsetpgrp},
+    sys::signal::{Signal, pthread_sigmask, SigmaskHow, SigSet},
 };
-use crate::util::Pipe;
+use crate::{
+    container::get_tty_fds,
+    util::Pipe,
+};
 use super::Process;
 
 // We re-export these, as they are part of our API
@@ -38,10 +42,10 @@ pub type EnvVars = HashMap<OsString, OsString>;
 
 // We wrap the standard library `Command` to provide additional features:
 // * Logging of the command executed, and failures
-// * set_pgrp()
+// * setpgrp()
 // We have to delegate a few methods to the inner `StdCommand`, which makes it a bit verbose.
 // We considered the subprocess crate, but it wasn't very useful, and it lacked
-// the crucial feature of pre_exec() that the standard library has for doing setsid().
+// the crucial feature of pre_exec() that the standard library has for doing setpgrp().
 
 pub struct Command {
     inner: StdCommand,
@@ -92,17 +96,50 @@ impl Command {
         self
     }
 
-    pub fn setsid(&mut self) -> &mut Self {
-        unsafe {
-            self.pre_exec(|| match setsid() {
-                Err(e) => {
-                    error!("Failed to setuid(): {}", e);
-                    // Only errno is propagated back to the parent
-                    Err(IoError::last_os_error())
-                },
-                Ok(_) => Ok(()),
-            })
-        }
+    pub fn setpgrp(&mut self) -> &mut Self {
+        let pre_exec_inner_fn = || -> Result<()> {
+            let pid = getpid();
+            setpgid(Pid::from_raw(0), pid).context("setpgid() failed")?;
+
+            // We set the current pid the foreground process controlling the terminal.
+            // This makes bash happy (current.pgrp == tcgetpgrp()).
+            // Note that we block some terminal signals, otherwise we get stopped
+            // when executing tcsetgrp().
+            if let Some(tty_fd) = get_tty_fds().into_iter().next() {
+                let mut tsigs = SigSet::empty();
+                tsigs.add(Signal::SIGTSTP);
+                tsigs.add(Signal::SIGTTIN);
+                tsigs.add(Signal::SIGTTOU);
+                pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&tsigs), None)
+                    .context("Failed to block terminal signals")?;
+                tcsetpgrp(tty_fd, pid)
+                    .context("Failed to set the terminal process group")?;
+                pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&tsigs), None)
+                    .context("Failed to unblock terminal signals")?;
+            }
+
+            Ok(())
+        };
+
+        let pre_exec_fn = move || {
+            if let Err(e) = pre_exec_inner_fn() {
+                error!("Failed to run setpgrp() pre-exec hook: {}", e);
+                return Err(IoError::last_os_error());
+            }
+            Ok(())
+        };
+        unsafe { self.pre_exec(pre_exec_fn) }
+    }
+
+    pub fn set_child_subreaper(&mut self) -> &mut Self {
+        let pre_exec_fn = || {
+            let res = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER) };
+            if let Err(e) = nix::errno::Errno::result(res) {
+                error!("Failed to set PR_SET_CHILD_SUBREAPER, proceeding anyways: {}", e);
+            }
+            Ok(())
+        };
+        unsafe { self.pre_exec(pre_exec_fn) }
     }
 
     pub fn show_cmd_on_spawn(&mut self, value: bool) -> &mut Self {

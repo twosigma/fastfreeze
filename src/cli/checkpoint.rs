@@ -15,18 +15,20 @@
 use anyhow::{Result, Context};
 use std::{
     collections::HashSet,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, Duration},
 };
 use nix::{
     poll::{PollFd, PollFlags},
     sys::signal,
+    unistd::Pid,
 };
 use structopt::StructOpt;
 use serde::Serialize;
 use crate::{
     consts::*,
     store,
+    container,
     image::{ImageManifest, CpuBudget, shard, check_passphrase_file_exists},
     process::{Command, ProcessExt, ProcessGroup, Stdio},
     metrics::{with_metrics, emit_metrics},
@@ -54,7 +56,7 @@ ENVS:
 ))]
 pub struct Checkpoint {
     /// Image URL, defaults to the value used during the run command
-    #[structopt(long)]
+    #[structopt(short, long)]
     image_url: Option<String>,
 
     /// Dir/file to include in the image in addition to the ones specified during the run command.
@@ -88,16 +90,17 @@ pub struct Checkpoint {
     /// Verbosity. Can be repeated
     #[structopt(short, long, parse(from_occurrences))]
     pub verbose: u8,
-}
 
-fn is_app_running() -> bool {
-    Path::new("/proc").join(APP_ROOT_PID.to_string()).exists()
+    /// Checkpoint the specified application. See the run command help about
+    /// --app-name for more details.
+    #[structopt()]
+    app_name: Option<String>,
 }
 
 pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     let Checkpoint {
         image_url, num_shards, cpu_budget, passphrase_file,
-        preserved_paths, leave_running, verbose: _,
+        preserved_paths, leave_running, app_name: _, verbose: _,
     } = opts;
 
     // We override TMPDIR with a safe location. The uploader (or metrics CLI)
@@ -129,8 +132,6 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     if let Some(ref passphrase_file) = passphrase_file {
         check_passphrase_file_exists(passphrase_file)?;
     }
-
-    ensure!(is_app_running(), "Application is not running");
 
     // The manifest contains the name of the shards, which are generated at random.
     // We combine it with the store to generate the shard upload commands.
@@ -254,7 +255,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
 
     if leave_running {
         trace!("Resuming application");
-        kill_process_tree(APP_ROOT_PID, signal::SIGCONT)
+        kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGCONT)
             .context("Failed to resume application")?;
     } else {
         // We kill the app later, once metrics are emitted.
@@ -267,14 +268,16 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     img_manifest.persist_to_store(&*store)
         .with_context(|| format!("Failed to upload image manifest at {}", image_url))?;
 
-    info!("Checkpoint to {} complete. Took {:.1}s",
-          image_url, START_TIME.elapsed().as_secs_f64());
+    info!("Checkpoint completed in {:.1}s",
+          START_TIME.elapsed().as_secs_f64());
 
     Ok(stats)
 }
 
 impl super::CLI for Checkpoint {
     fn run(self) -> Result<()> {
+        container::enter_app_namespace(self.app_name.as_ref())?;
+
         // Holding the lock while invoking the metrics CLI is preferable to avoid
         // disturbing another instance trying to do PID control.
         with_checkpoint_restore_lock(|| {
@@ -287,7 +290,7 @@ impl super::CLI for Checkpoint {
             // risk terminating the container, preventing metrics from being emitted.
             if !leave_running {
                 debug!("Killing application");
-                kill_process_tree(APP_ROOT_PID, signal::SIGKILL)
+                kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGKILL)
                     .context("Failed to kill application")?;
             }
 
