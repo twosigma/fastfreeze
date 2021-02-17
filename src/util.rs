@@ -18,13 +18,16 @@ use std::{
     path::{PathBuf, Path},
     env,
     ffi::OsString,
-    fs,
+    fs::{self, Permissions},
+    os::unix::fs::PermissionsExt
 };
 use nix::{
-    unistd::pipe2,
     fcntl::OFlag,
     poll::{poll, PollFd},
+    sched::CloneFlags,
+    sys::stat::Mode,
     sys::uio::pwrite,
+    unistd::pipe2
 };
 use crate::{
     consts::*,
@@ -99,6 +102,19 @@ pub fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<u64> {
                                  from.as_ref().display(), to.as_ref().display()))
 }
 
+pub fn openat(path: &fs::File, filename: impl AsRef<Path>) -> Result<fs::File> {
+    let fd = nix::fcntl::openat(path.as_raw_fd(), filename.as_ref(), OFlag::O_RDONLY, Mode::empty())
+        .with_context(|| format!("Failed to open {}", filename.as_ref().display()))?;
+    unsafe { Ok(fs::File::from_raw_fd(fd)) }
+}
+
+pub fn setns(nsfile: &fs::File, flag: CloneFlags) -> Result<()> {
+    let res = unsafe { libc::setns(nsfile.as_raw_fd(), flag.bits()) };
+    nix::errno::Errno::result(res)
+        .with_context(|| format!("Failed to enter namespace. setns({:?}) failed", flag))
+        .map(drop)
+}
+
 pub fn find_lib(lib_name: impl AsRef<Path>) -> Result<PathBuf> {
     // We could do a more efficient implementation, but it hurts readability,
     // but we don't do it, because we like readability more.
@@ -136,6 +152,18 @@ pub fn atomic_symlink(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()
         })?;
 
     Ok(())
+}
+
+pub fn set_tmp_like_permissions(from: impl AsRef<Path>) -> Result<()> {
+    fs::set_permissions(from.as_ref(), Permissions::from_mode(0o1777))
+        .with_context(|| format!("Failed to chmod 1777 {}", from.as_ref().display()))
+}
+
+pub fn get_home_dir() -> Option<PathBuf> {
+    // It is said to be deprecated, but it's fine on Linux.
+    #[allow(deprecated)]
+    std::env::home_dir()
+        .and_then(|h| if h.to_string_lossy().is_empty() { None } else { Some(h) })
 }
 
 pub trait JsonMerge {

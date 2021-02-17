@@ -16,20 +16,26 @@ use std::{
     time::Instant,
     path::PathBuf,
 };
-use crate::util::gen_random_alphanum_string;
+use crate::util::{
+    gen_random_alphanum_string,
+    get_home_dir,
+};
 
 // This file gathers all fastfreeze hard-coded settings
 
 /// The image version must be bumped when libvirttime or libvirtcpuid change,
 /// or when the `ImageManifest` format changes.
-pub const CURRENT_IMG_VERSION: &str = "2020-11-19";
+pub const CURRENT_IMG_VERSION: &str = "2021-02-19";
 
 // We compute the paths at runtime. It improves readability compared to using
 // macros at compile time.
 lazy_static! {
-    // We pick /var/fastfreeze for our directory and not /tmp because we place the
-    // original elf loader there (see libvirtcpuid). So it has to be there after a reboot.
-    pub static ref FF_DIR: PathBuf             = PathBuf::from("/var/fastfreeze");
+    // We pick /var/tmp/fastfreeze for our directory and not /tmp because we place the
+    // original ELF loader there (see libvirtcpuid). We want this to persist across reboot.
+    // Also, /tmp is sometimes mounted with tmpfs, and that would be bad for us.
+    // We need to pick a writable place, that can be hard-coded (the ELF loader
+    // needs the absolute path at compile time).
+    pub static ref FF_DIR: PathBuf             = PathBuf::from("/var/tmp/fastfreeze");
     pub static ref NO_PRESERVE_FF_DIR: PathBuf = FF_DIR.join("run");
 
     pub static ref APP_CONFIG_PATH: PathBuf  = FF_DIR.join("app-config.json");
@@ -53,6 +59,17 @@ lazy_static! {
     // XXX When changing this socket path, CRIU must be changed and recompiled.
     pub static ref NS_LAST_PID_SOCK_PATH: PathBuf = NO_PRESERVE_FF_DIR.join("set_ns_last_pid.sock");
     pub static ref LOCK_FILE_PATH: PathBuf        = NO_PRESERVE_FF_DIR.join("lock");
+
+    // CONTAINERS_DIR holds container directories. Each is a private
+    // /var/tmp/fastfreeze directory for a given container
+    pub static ref CONTAINERS_DIR: PathBuf = PathBuf::from("/tmp/fastfreeze");
+    // The following paths are valid once we mound bind the container dir onto FF_DIR.
+    pub static ref CONTAINER_PID: PathBuf = NO_PRESERVE_FF_DIR.join("pid");
+    pub static ref CONTAINER_PTY: PathBuf = NO_PRESERVE_FF_DIR.join("pty");
+    pub static ref CONTAINER_APP_TMP: PathBuf = FF_DIR.join("tmp");
+
+    pub static ref DEFAULT_IMAGE_DIR: PathBuf = get_home_dir().map(|h| h.join(".fastfreeze"))
+        .expect("Failed to determine home directory. Please set $HOME.");
 }
 
 /// Arbitrary application PID. Has to be bigger than 300 due to the way we do PID control
