@@ -110,7 +110,7 @@ impl super::CLI for Extract {
         let store = store::from_url(&image_url)?;
         store.prepare(false)?;
 
-        info!("Fetching image manifest for {}", image_url);
+        debug!("Fetching image manifest for {}", image_url);
 
         match ImageManifest::fetch_from_store(&*store, allow_bad_image_version)? {
             ManifestFetchResult::Some(img_manifest) => {
@@ -125,7 +125,7 @@ impl super::CLI for Extract {
                       fetched, desired);
             }
             ManifestFetchResult::NotFound => {
-                bail!("Image manifest not found, running app normally");
+                bail!("Image manifest not found");
             }
         }
 

@@ -92,8 +92,8 @@ impl Opts {
         }
     }
 
-    pub fn init_logger(&self) {
-        logger::init(self.log_level(), self.log_prefix(), self.use_log_file());
+    pub fn init_logger(&self) -> Result<()> {
+        logger::init(self.log_level(), self.log_prefix(), self.use_log_file())
     }
 }
 
