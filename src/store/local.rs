@@ -14,7 +14,6 @@
 
 use anyhow::Result;
 use std::path::PathBuf;
-use url::Url;
 use crate::util::create_dir_all;
 
 pub struct Store {
@@ -22,8 +21,8 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(url: Url) -> Self {
-        Self { path: PathBuf::from(url.path()) }
+    pub fn new(path: &str) -> Self {
+        Self { path: PathBuf::from(path) }
     }
 }
 

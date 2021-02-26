@@ -18,7 +18,7 @@ mod gs;
 
 use anyhow::{Result, Context};
 use std::io::Write;
-use url::Url;
+use url::{Url, ParseError};
 use crate::process::{Stdio, Command};
 
 // `Store` and `File` describe the API needed to store and retrieve images
@@ -98,14 +98,30 @@ pub trait FileExt: File {
 impl FileExt for dyn File {}
 
 /// Returns a store corresponding to the provided `url`.
-pub fn from_url(url: &str) -> Result<Box<dyn Store>> {
-    let url = Url::parse(url)?;
-
-    Ok(match url.scheme() {
-        "file" => Box::new(local::Store::new(url)),
-        "s3"   => Box::new(s3::Store::new(url)),
-        "gs"   => Box::new(gs::Store::new(url)),
-        _ => bail!("Unknown image scheme {}", url),
+/// If url does not start with "scheme:", it is assumed to be a file path.
+pub fn from_url(url_str: &str) -> Result<Box<dyn Store>> {
+    Ok(match Url::parse(url_str) {
+        Err(ParseError::RelativeUrlWithoutBase) => {
+            ensure!(url_str.starts_with("/"),
+                "Please use an absolute path for the image path");
+            Box::new(local::Store::new(url_str))
+        },
+        Err(e) => bail!(e),
+        Ok(url) => {
+            match url.scheme() {
+                "file" => {
+                    // The url parser prefix the relative paths with /, and we
+                    // have no way to know once parsed. Which is why we do error
+                    // detection here, and not in local::Store.
+                    ensure!(url_str.starts_with("file:/"),
+                        "Please use an absolute path for the image path");
+                    Box::new(local::Store::new(url.path()))
+                },
+                "s3"   => Box::new(s3::Store::new(url)),
+                "gs"   => Box::new(gs::Store::new(url)),
+                _ => bail!("Unknown image scheme {}", url),
+            }
+        }
     })
 }
 
@@ -117,7 +133,7 @@ mod test {
     #[test]
     fn test_from_url() {
         assert!(from_url("file:/tmp/img").is_ok());
-        assert!(from_url("file:tmp/img").is_ok());
+        assert!(from_url("file:tmp/img").is_err());
     }
 
     fn test_store_read_write(store: &Box<dyn Store>) -> Result<()> {
