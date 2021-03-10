@@ -1,10 +1,22 @@
-FROM debian:10
+# We use debian 9 to allow our binary distribution to run on a lower version of libc.
+# This increases our compatiblity.
+# However, we need openssl 1.1.1 (for the -pbkdf2 argument support), which is
+# only on debian 10. So we'll compile openssl.
+FROM debian:9
 
 WORKDIR /src/fastfreeze
 
 # Few essential things before we can get going
 RUN apt-get update
 RUN apt-get install -y build-essential pkg-config sudo curl git python3
+
+RUN set -ex; \
+  curl -fsSL https://www.openssl.org/source/openssl-1.1.1j.tar.gz | \
+    tar xzf - -C /tmp; \
+  cd /tmp/openssl-1.1.1j; \
+  ./config; \
+  make -j4; \
+  make install -j4
 
 # Build dependencies (CRIU, rust toolchain, libvirtcpuid, etc.)
 COPY deps deps
