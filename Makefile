@@ -12,15 +12,15 @@
 #       See the License for the specific language governing permissions and
 #       limitations under the License.
 
-#BUILD := debug
-BUILD := release
+#BUILD ?= debug
+BUILD ?= release
 
-BUILD_FLAGS :=
+BUILD_FLAGS ?=
 ifeq ($(BUILD),release)
 	BUILD_FLAGS += --release
 endif
 
-CARGO := $(HOME)/.cargo/bin/cargo
+CARGO ?= $(HOME)/.cargo/bin/cargo
 ifeq (,$(wildcard $(CARGO)))
 	CARGO := cargo
 endif
