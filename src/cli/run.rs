@@ -14,6 +14,7 @@
 
 use anyhow::{Result, Context};
 use std::{
+    io::{BufReader, BufWriter},
     collections::HashSet,
     ffi::OsString,
     fs,
@@ -150,7 +151,10 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn save(&self) -> Result<()> {
-        serde_json::to_writer_pretty(fs::File::create(&*APP_CONFIG_PATH)?, &self)?;
+        let file = fs::File::create(&*APP_CONFIG_PATH)
+            .with_context(|| format!("Failed to create {}", APP_CONFIG_PATH.display()))?;
+        let file = BufWriter::new(file);
+        serde_json::to_writer_pretty(file, &self)?;
         Ok(())
     }
 
@@ -158,6 +162,7 @@ impl AppConfig {
         let file = fs::File::open(&*APP_CONFIG_PATH)
             .with_context(|| format!("Failed to open {}. \
                 It is created during the run command", APP_CONFIG_PATH.display()))?;
+        let file = BufReader::new(file);
         Ok(serde_json::from_reader(file)?)
     }
 
