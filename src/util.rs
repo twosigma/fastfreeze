@@ -19,7 +19,9 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, Permissions},
-    os::unix::fs::PermissionsExt
+    os::unix::fs::PermissionsExt,
+    io::prelude::*,
+    io::SeekFrom,
 };
 use nix::{
     fcntl::OFlag,
@@ -43,6 +45,17 @@ pub fn gen_random_alphanum_string(len: usize) -> String {
         .sample_iter(&Alphanumeric)
         .take(len)
         .collect()
+}
+
+// This is essentially what stream_len() does in the std lib, but it is
+// unstable. We use this in the meantime.
+pub fn get_file_size(file: &mut fs::File) -> Result<u64> {
+    let old_pos = file.seek(SeekFrom::Current(0))?;
+    let len = file.seek(SeekFrom::End(0))?;
+    if old_pos != len {
+        file.seek(SeekFrom::Start(old_pos))?;
+    }
+    Ok(len)
 }
 
 pub fn pwrite_all(file: &fs::File, buf: &[u8], offset: i64) -> Result<()> {

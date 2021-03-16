@@ -16,20 +16,19 @@ use anyhow::{Result, Context};
 use std::{
     mem::{size_of, MaybeUninit},
     os::unix::io::AsRawFd,
-    os::unix::fs::PermissionsExt,
     path::Path,
     io::prelude::*,
-    io::SeekFrom,
     slice,
     fs,
 };
-use nix::unistd::{lseek, Whence};
-#[cfg(not(test))]
-use nix::{Error, errno::Errno};
+use nix::{
+    unistd::{lseek, Whence},
+    errno::Errno,
+};
 use libc::timespec;
 use crate::{
     consts::*,
-    util::pwrite_all,
+    util::{pwrite_all, get_file_size},
 };
 
 // This file contains logic to configure libvirttime. In a nutshell, libvirttime
@@ -67,16 +66,13 @@ pub type Nanos = i128;
 
 #[cfg(not(test))]
 fn clock_gettime_monotonic() -> Nanos {
-    let result = unsafe {
+    unsafe {
         let mut ts = MaybeUninit::<timespec>::uninit();
-        if libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) == 0 {
-            Ok(Nanos::from_timespec(ts.assume_init()))
-        } else {
-            Err(Error::Sys(Errno::last()))
-        }
-    };
-
-    result.expect("clock_gettime() failed")
+        let res = libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr());
+        let value = nix::errno::Errno::result(res).expect("clock_gettime() failed");
+        assert_eq!(value, 0);
+        Nanos::from_timespec(ts.assume_init())
+    }
 }
 
 #[cfg(test)]
@@ -177,6 +173,10 @@ impl<'a> ConfigPath<'a> {
         Ok(app_clock)
     }
 
+    fn expected_file_size() -> u64 {
+        Self::pid_to_fpos(PID_MAX+1) as u64
+    }
+
     pub fn write_intial(&self) -> Result<()> {
         || -> Result<_> {
             // We arbitrarily start the app clock at 0.
@@ -184,28 +184,18 @@ impl<'a> ConfigPath<'a> {
 
             // The time config file must be writable by all users as we are
             // applying a system-wide virtualization configuration.
-            let mut config_file = fs::File::create(&self.path)
-                .with_context(|| format!("Failed to create {}", self.path.display()))?;
-
-            // We `set_permissions()` after `create()` because our umask may get in the way of
-            // the flags we specify in create(). We don't want to change our umask as it is a
-            // process-wide setting, and not thread local. So it would be unsafe to restore the
-            // previous umask.
-            fs::set_permissions(self.path, fs::Permissions::from_mode(0o777))
-                .with_context(|| format!("Failed to chmod {}", self.path.display()))?;
+            let config_file = fs::File::create(&self.path)
+                .context("File creation failed")?;
 
             // The config_file has the layout of the `struct virt_time_config`
             write_timespec_at(&config_file, Self::config_time_offset(app_clock), 0)?;
 
-            // Write a 0 at the end of the file to make it the right size
-            // without using much space. We add a page to avoid making the hole
-            // ends too early.
-            config_file.seek(SeekFrom::Current(
-                Self::pid_to_fpos(PID_MAX+1) + PAGE_SIZE as i64))?;
-            config_file.write_all(&[0])?;
+            // We make a bunch of holes in the file. We start empty.
+            config_file.set_len(Self::expected_file_size())
+                .context("ftruncate failed")?;
 
             Ok(())
-        }().with_context(|| format!("Failed to write to {}", self.path.display()))
+        }().with_context(|| format!("Failed to create {}", self.path.display()))
     }
 
     /// PID to file position in the config file
@@ -226,6 +216,9 @@ impl<'a> ConfigPath<'a> {
                 .write(true)
                 .open(&self.path)?;
 
+            ensure!(get_file_size(&mut config_file)? == Self::expected_file_size(),
+                    "{} has an incorrect file size", self.path.display());
+
             let new_time_offset = Self::config_time_offset(app_clock);
             let old_time_offset = read_timespec(&mut config_file)?;
             let old_to_new_time_offset = new_time_offset - old_time_offset;
@@ -240,8 +233,11 @@ impl<'a> ConfigPath<'a> {
                 // With SEEK_DATA, we'll be skipping pages that have no pids.
                 // It seeks to the earlist file position that has data. Typically,
                 // we'll be hitting a page boundary.
-                let fpos = lseek(config_file.as_raw_fd(), Self::pid_to_fpos(pid),
-                                 Whence::SeekData)?;
+                let fpos = match lseek(config_file.as_raw_fd(), Self::pid_to_fpos(pid), Whence::SeekData) {
+                    Err(e) if e.as_errno() == Some(Errno::ENXIO) => break,
+                    Err(e) => bail!("seek failed: {}", e),
+                    Ok(fpos) => fpos,
+                };
 
                 // Note: performance could be better as we are doing two
                 // syscalls (read+write) per pid. We could improve this to only
@@ -249,9 +245,7 @@ impl<'a> ConfigPath<'a> {
 
                 // Compute the pid corresponding to the file position
                 pid = Self::fpos_to_pid(fpos);
-                if pid > PID_MAX {
-                    break;
-                }
+                assert!(pid <= PID_MAX);
 
                 // `fpos_to_pid()` rounds down. If the returned `fpos` does not
                 // correspond to the file position of the `pid`, the file
@@ -289,6 +283,7 @@ impl<'a> Default for ConfigPath<'a> {
 mod test {
     use super::*;
     use std::sync::Mutex;
+    use std::io::SeekFrom;
 
     lazy_static! {
         static ref MACHINE_CLOCK: Mutex<Nanos> = Mutex::new(-1);
