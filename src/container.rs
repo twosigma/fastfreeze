@@ -30,8 +30,15 @@ use nix::{
     sys::signal::{self, kill},
     sys::termios::tcgetattr,
     sys::wait::{waitpid, WaitStatus},
-    unistd::{ForkResult, Pid, Uid, Gid, dup2, fork, getuid, getgid}
+    sys::stat::Mode,
+    unistd::{
+        fork, ForkResult, Pid,
+        getuid, getgid, Uid, Gid,
+        lseek64, Whence, dup2, close,
+    },
+    fcntl::{fcntl, FcntlArg, open, OFlag},
 };
+
 use caps::CapSet;
 use crate::{
     consts::*,
@@ -351,11 +358,44 @@ fn prepare_pty_namespace() -> Result<()> {
         let new_pts_0 = fs::OpenOptions::new().read(true).write(true).open("/dev/pts/0")
             .context("Failed to reopen /dev/pts/0")?;
 
-        for fd in tty_fds {
+        for &fd in &tty_fds {
             // dup2 does not copy the close-on-exec flag, which is what we want.
             dup2(new_pts_0.as_raw_fd(), fd)
                 .context("dup2() failed")?;
         }
+    }
+
+    // Step 4: If one of the stdin/stdout/stderr is a regular file, we need to
+    // reopen the target to get it into our mount namespace, otherwise it spooks CRIU.
+    // Note: at some point, we might want to do this for all fds.
+    fn reopen_fd(fd: RawFd, path: &Path) -> Result<()> {
+        let flags = fcntl(fd, FcntlArg::F_GETFL)?;
+        let flags = unsafe { OFlag::from_bits_unchecked(flags) };
+
+        let pos = lseek64(fd, 0, Whence::SeekCur).context("lseek() failed")?;
+        let new_fd = open(path, flags, Mode::empty()).context("open() failed")?;
+        lseek64(new_fd, pos, Whence::SeekSet).context("lseek() failed")?;
+
+        dup2(new_fd, fd).context("dup2() failed")?;
+        close(new_fd).context("close() failed")?;
+
+        Ok(())
+    }
+
+    for &fd in &[0,1,2] {
+        if tty_fds.contains(&fd) {
+            continue;
+        }
+
+        // The target can be a pipe, in which case we don't want to reopen it.
+        // We open re-open regular files.
+        let path = readlink_fd(fd)?;
+        if !path.starts_with("/") {
+            continue;
+        }
+
+        reopen_fd(fd, &path)
+            .with_context(|| format!("Failed to re-open {}", path.display()))?;
     }
 
     Ok(())
@@ -416,8 +456,8 @@ fn prepare_pid_namespace() -> Result<()> {
         Err(e) if e.raw_os_error() == Some(libc::EACCES)) {
             warn!("WARN: /proc/sys/kernel/ns_last_pid is not writable, which can slow down restores. \
                    This can typically be fixed by upgrading your kernel. \
-                   You can however retry the command with setting FF_FAKE_ROOT=1 \
-                   so that FastFreeze remaps your uid to uid=0 as a workaround");
+                   Another solution is to remap your uid to uid=0 in the container, which you can do \
+                   by running fastfreeze with FF_FAKE_ROOT=1");
     }
 
     Ok(())

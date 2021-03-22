@@ -85,7 +85,7 @@ impl Opts {
     fn use_log_file(&self) -> bool {
         // Persisting a log file is helpful to carry the history of the
         // application in the checkpointed image.
-        matches!(self.command, 
+        matches!(self.command,
             Command::Run(_) |
             Command::Checkpoint(_)
         )
