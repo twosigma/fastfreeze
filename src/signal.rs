@@ -16,15 +16,14 @@ use anyhow::Result;
 use std::{
     error::Error,
     fmt::Display,
-    fs::File, io::{BufReader, ErrorKind},
+    fs::File, io::ErrorKind,
     path::Path,
     result::Result as StdResult,
     sync::atomic::{AtomicBool, Ordering}
 };
 use std::io::prelude::*;
-use std::collections::HashSet;
 use nix::{
-    sys::signal::{self, killpg, Signal},
+    sys::signal::{self, kill, Signal},
     errno::Errno,
     unistd::Pid
 };
@@ -145,37 +144,13 @@ fn get_process_tree(root_pid: Pid) -> Result<Vec<Pid>> {
 
 /// Kill an entire process group. It is not atomic.
 /// Tasks may appear while we are traversing the tree.
+/// This is mostly used to SIGSTOP/SIGCONT the entire application.
+/// TODO We could use the cgroup freezer if we have access to it.
 pub fn kill_process_tree(root_pid: Pid, signal: Signal) -> Result<()> {
-    // The application is running under a process group (pid=APP_ROOT_PID)
-    // Normally we should be able to just kill that, but because the application
-    // can call setsid() and setpgrp(), then we might not get processes as process
-    // groups don't nest. So we need to iterate through all children.
-    // We gather process groups of all children, and kill these.
-    let mut pgrp_pids: HashSet::<i32> = HashSet::new();
-
     for pid in get_process_tree(root_pid)? {
-        // We tolerate open failures as tasks may disappear.
-        if let Ok(file) = File::open(Path::new("/proc").join(pid.to_string()).join("status")) {
-            for line in BufReader::new(file).lines() {
-                // lines are of the format "Key:\tValue"
-                // The NSpgid line may have multiple pids separated with a \t. We only
-                // care about the first one, hence the .. at the end of the pattern match.
-                if let [key, value, ..] = *line?.split(":\t").collect::<Vec<_>>() {
-                    if key == "NSpgid" {
-                        pgrp_pids.insert(value.parse().expect("non-numeric pid"));
-                        break; // stop reading the status file, we have what we want.
-                    }
-                }
-            }
-        }
-    }
-
-    ensure!(!pgrp_pids.is_empty(), "Failed to parse process groups in /proc");
-
-    for pid in pgrp_pids {
         // We ignore kill errors as process may disappear.
         // It's not really satisfactory, but I'm not sure if we can do better.
-        let _ = killpg(Pid::from_raw(pid), signal);
+        let _ = kill(pid, signal);
     }
 
     Ok(())

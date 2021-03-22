@@ -356,10 +356,14 @@ fn run_from_scratch(
 
     cmd.env("FASTFREEZE", "1");
 
-    // We like to set the application in a process group so we can signal it better,
-    // including its children. We don't do setsid() because it prevents the application
-    // from controlling the terminal and do job control for interactive environments.
-    cmd.setpgrp();
+    // We don't set the application in a process group because we want to be
+    // compatible with both of these usages:
+    // * "cat | fastfreeze run cat": the first cat must be in the process group
+    // controlling the terminal to receive input
+    // * "fastfreeze run cat": the cat here must be in the process group
+    // controlling the terminal
+    // We don't want to create a new process group as this would remove any
+    // hopes in making both scenarios work well.
 
     // If we reparent orphans of the application, they will be invisible from CRIU
     // when it tries to checkpoint the application. That's bad. Instead, we make sure
@@ -579,7 +583,10 @@ impl super::CLI for Run {
                     .spawn()?;
             }
 
-            monitor_child(Pid::from_raw(APP_ROOT_PID))?;
+            let app_exit_result = monitor_child(Pid::from_raw(APP_ROOT_PID));
+            if app_exit_result.is_ok() {
+                info!("Application exited with exit_code=0");
+            }
 
             // The existance of the app config tells indicates if the app is
             // currently running. This is used in is_app_running().
@@ -587,7 +594,7 @@ impl super::CLI for Run {
                 error!("{}", e);
             }
 
-            Ok(())
+            app_exit_result
         };
 
         // We use `with_metrics` to log the exit_code of the application and run time duration
