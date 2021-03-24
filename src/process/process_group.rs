@@ -78,7 +78,7 @@ impl ProcessGroup {
 
     pub fn with_kill_grace_period(kill_grace_period: Duration) -> Result<Self> {
         let pipe = Pipe::new(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)?;
-        let sig_hook_id = signal_hook::pipe::register(signal_hook::SIGCHLD, pipe.write)
+        let sig_hook_id = signal_hook::low_level::pipe::register(signal_hook::consts::SIGCHLD, pipe.write)
             .context("Failed to register signal")?;
 
         Ok(Self {
@@ -189,7 +189,7 @@ impl ProcessGroup {
         for child in &mut self.children {
             child.inner.wait()?;
         }
-        ensure!(signal_hook::unregister(self.sig_hook_id),
+        ensure!(signal_hook::low_level::unregister(self.sig_hook_id),
                 "signal_hook failed to unregister");
         Ok(())
     }

@@ -37,7 +37,7 @@ pub fn trap_sigterm_and_friends() -> Result<()> {
         unsafe {
             // We cannot emit a log message in the signal handler as it
             // would be unsafe to allocate memory.
-            signal_hook::register(*signal as i32, ||
+            signal_hook::low_level::register(*signal as i32, ||
                 SIGTERM_RECEIVED.store(true, Ordering::SeqCst))?;
         }
     }

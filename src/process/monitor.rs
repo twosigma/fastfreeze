@@ -51,7 +51,7 @@ pub fn monitor_child(pid_child: Pid) -> Result<()> {
     for sig in Signal::iterator() {
         // We don't forward SIGCHLD, and neither `FORBIDDEN` signals (e.g.,
         // SIGSTOP, SIGFPE, SIGKILL, ...)
-        if sig == Signal::SIGCHLD || signal_hook::FORBIDDEN.contains(&(sig as c_int)) {
+        if sig == Signal::SIGCHLD || signal_hook::consts::FORBIDDEN.contains(&(sig as c_int)) {
             continue;
         }
 
@@ -59,7 +59,7 @@ pub fn monitor_child(pid_child: Pid) -> Result<()> {
         // The `register` function is unsafe because one could call malloc(),
         // and deadlock the program. Here we call kill() which is safe.
         unsafe {
-            signal_hook::register(sig as c_int, move || {
+            signal_hook::low_level::register(sig as c_int, move || {
                 let _ = kill(pid_child, sig);
             })?;
         }
