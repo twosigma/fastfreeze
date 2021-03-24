@@ -147,6 +147,10 @@ pub struct AppConfig {
     pub app_clock: Nanos,
     // Used to compute the duration between a restore and a checkpoint, for metrics only.
     pub created_at: SystemTime,
+    // When we pass external pipes to the application as stdin/stdout/stderr,
+    // we need to remember the pipe inodes that we passed, so that when we restore,
+    // we can replace the original external pipes by the new ones.
+    pub inherited_resources: criu::InheritableResources,
 }
 
 impl AppConfig {
@@ -236,10 +240,19 @@ fn restore(
     // Also, we keep the passphrase_file setting if there's one to ensure that
     // a previously encrypted image remains encrypted. This is normally unecessary, because
     // if the image was in fact encrypted, we would be using a passphrase_file already.
-    let duration_since_checkpoint = {
+    let (duration_since_checkpoint, previously_inherited_resources) = {
         let old_config = AppConfig::restore()?;
         preserved_paths.extend(old_config.preserved_paths);
         let passphrase_file = passphrase_file.or(old_config.passphrase_file);
+
+        let previously_inherited_resources = old_config.inherited_resources;
+        let current_inherited_resources = criu::InheritableResources::current()?;
+        ensure!(previously_inherited_resources.compatible_with(&current_inherited_resources),
+            "Cannot match the original application file descriptors patterns. \
+             Try again by connecting file descriptors such that they are grouped in a similar manner. \n\
+             Original file descriptors: {:#?},\n\
+             Current file descriptors: {:#?}",
+            previously_inherited_resources.0, current_inherited_resources.0);
 
         let config = AppConfig {
             image_url: image_url.to_string(),
@@ -247,6 +260,7 @@ fn restore(
             passphrase_file,
             created_at: SystemTime::now(),
             app_clock: old_config.app_clock,
+            inherited_resources: current_inherited_resources,
         };
         config.save()?;
 
@@ -271,7 +285,7 @@ fn restore(
             Duration::from_nanos(old_config.app_clock as u64).as_secs_f64());
         virt::time::ConfigPath::default().adjust_timespecs(old_config.app_clock)?;
 
-        duration_since_checkpoint
+        (duration_since_checkpoint, previously_inherited_resources)
     };
 
     // We start the ns_last_pid daemon here. Note that we join_as_daemon() instead of join(),
@@ -301,7 +315,7 @@ fn restore(
     // Restore application processes.
     // We become the parent of the application as CRIU is configured to use CLONE_PARENT.
     debug!("Restoring processes");
-    criu::criu_restore_cmd(leave_stopped)
+    criu::criu_restore_cmd(leave_stopped, &previously_inherited_resources)
         .enable_stderr_logging("criu")
         .spawn()
         .and_then(|ps| {
@@ -331,12 +345,15 @@ fn run_from_scratch(
     app_cmd: Vec<OsString>,
 ) -> Result<()>
 {
+    let inherited_resources = criu::InheritableResources::current()?;
+
     let config = AppConfig {
         image_url: image_url.to_string(),
         preserved_paths,
         passphrase_file,
         app_clock: 0,
         created_at: SystemTime::now(),
+        inherited_resources,
     };
     config.save()?;
 

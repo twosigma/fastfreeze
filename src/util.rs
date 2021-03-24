@@ -14,7 +14,7 @@
 
 use anyhow::{Result, Context};
 use std::{
-    os::unix::io::{AsRawFd, FromRawFd},
+    os::unix::io::{RawFd, AsRawFd, FromRawFd},
     path::{PathBuf, Path},
     env,
     ffi::OsString,
@@ -24,7 +24,7 @@ use std::{
     io::SeekFrom,
 };
 use nix::{
-    fcntl::OFlag,
+    fcntl::{fcntl, FcntlArg, FdFlag, OFlag},
     poll::{poll, PollFd},
     sched::CloneFlags,
     sys::stat::Mode,
@@ -56,6 +56,31 @@ pub fn get_file_size(file: &mut fs::File) -> Result<u64> {
         file.seek(SeekFrom::Start(old_pos))?;
     }
     Ok(len)
+}
+
+pub fn get_inheritable_fds() -> Result<Vec<RawFd>> {
+    || -> Result<Vec<RawFd>> {
+        let mut result = vec![];
+        for entry in fs::read_dir("/proc/self/fd")? {
+            let fd = entry?.file_name().to_string_lossy().parse()?;
+            let fd_flags = fcntl(fd, FcntlArg::F_GETFD)?;
+            let fd_flags = FdFlag::from_bits_truncate(fd_flags);
+            if !fd_flags.contains(FdFlag::FD_CLOEXEC) {
+                result.push(fd);
+            }
+        }
+        Ok(result)
+    }().context("Failed to enumerate file descriptors")
+}
+
+pub fn readlink_fd(fd: RawFd) -> Result<PathBuf> {
+    let path = format!("/proc/self/fd/{}", fd);
+    fs::read_link(&path)
+        .with_context(|| format!("Failed to readlink {}", &path))
+}
+
+pub fn is_term(fd: RawFd) -> bool {
+    nix::sys::termios::tcgetattr(fd).is_ok()
 }
 
 pub fn pwrite_all(file: &fs::File, buf: &[u8], offset: i64) -> Result<()> {

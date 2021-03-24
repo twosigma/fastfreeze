@@ -227,6 +227,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
             // into to the streamer (like fs.tar), and stream it at the very end.
             // For now, we have the time at which the checkpoint started.
             created_at: SystemTime::now(),
+            inherited_resources: config.inherited_resources,
         };
         config.save()?;
     }

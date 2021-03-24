@@ -44,7 +44,7 @@ use crate::{
     consts::*,
     cli::{ExitCode, install, run::is_app_running},
     process::{monitor_child, ChildDied},
-    util::{create_dir_all, set_tmp_like_permissions, openat, setns},
+    util::{create_dir_all, set_tmp_like_permissions, openat, setns, readlink_fd},
     logger,
 };
 
@@ -283,12 +283,6 @@ pub fn get_tty_fds() -> Vec<RawFd> {
         .collect()
 }
 
-fn readlink_fd(fd: RawFd) -> Result<PathBuf> {
-    let path = format!("/proc/self/fd/{}", fd);
-    fs::read_link(&path)
-        .with_context(|| format!("Failed to readlink {}", &path))
-}
-
 // Takes an array of TTY fds, and return the path (/dev/pts/X) of the TTY.
 // Note that we take an array of TTY fds to ensure that they all point to the
 // same TTY, but semantically, we would just be taking just a single fd.
@@ -304,13 +298,12 @@ fn get_tty_path(tty_fds: &[RawFd]) -> Result<PathBuf> {
 }
 
 fn prepare_pty_namespace() -> Result<()> {
-    // We need a new pts namespace during checkpoint/restore because:
-    // 1) we pass the current pty (what we currently hold as stderr for example)
-    //    to the child. It needs to be deterministic because when we restore, it
-    //    needs to have the same name. We'll use /dev/pts/0 for passing down our pty.
-    // 2) PTYs created in the container (by a program like tmux or sshd)
-    //    need to be conflict free when restoring (/dev/pts/N should be available),
-    //    so we need some amount of virtualization.
+    // We need a new pts namespace during checkpoint/restore because PTYs
+    // created in the container (by a program like tmux or sshd) need to be
+    // conflict free when restoring (/dev/pts/N should be available), so we need
+    // some amount of virtualization.
+    // We'll relocate the current TTY at /dev/pts/0 to increase compatibility
+    // with programs, even though it's unlikely that it is useful.
     // We want to mount new namespace on /dev/pts, but we want to map our current pty
     // to /dev/pts/0. We'll do some trickeries with mount binds to achieve that.
     // Another solution would be to create a new pty, and proxy data to/from our
