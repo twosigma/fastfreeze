@@ -14,12 +14,11 @@
 
 use anyhow::Result;
 use std::path::PathBuf;
-use url::Url;
 use structopt::StructOpt;
 use serde::Serialize;
 use crate::{
     consts::*,
-    store,
+    store::ImageUrl,
     image::{ManifestFetchResult, ImageManifest, shard, check_passphrase_file_exists},
     process::{Command, ProcessExt, ProcessGroup, Stdio},
     image_streamer::ImageStreamer,
@@ -34,7 +33,6 @@ ENVS:
 ))]
 pub struct Extract {
     /// Image URL, which can also be a regular local path
-    #[structopt(short, long)]
     image_url: String,
 
     /// Output directory where to extract the image.
@@ -93,22 +91,17 @@ impl super::CLI for Extract {
             allow_bad_image_version, passphrase_file, verbose: _
         } = self;
 
-        let output_dir = match output_dir {
-            Some(output_dir) => output_dir,
-            None => {
-                Url::parse(&image_url)?.path_segments()
-                    .and_then(|paths| paths.last())
-                    .map(PathBuf::from)
-                    .ok_or_else(|| anyhow!("Supply an output_dir"))?
-            }
-        };
+        let image_url = ImageUrl::parse(&image_url)?;
+
+        let store = image_url.store();
+        store.prepare(false)?;
+
+        let output_dir = output_dir
+            .unwrap_or_else(|| PathBuf::from(image_url.image_name()));
 
         if let Some(ref passphrase_file) = passphrase_file {
             check_passphrase_file_exists(passphrase_file)?;
         }
-
-        let store = store::from_url(&image_url)?;
-        store.prepare(false)?;
 
         debug!("Fetching image manifest for {}", image_url);
 

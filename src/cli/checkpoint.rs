@@ -27,7 +27,7 @@ use structopt::StructOpt;
 use serde::Serialize;
 use crate::{
     consts::*,
-    store,
+    store::ImageUrl,
     container,
     image::{ImageManifest, CpuBudget, shard, check_passphrase_file_exists},
     process::{Command, ProcessExt, ProcessGroup, Stdio},
@@ -115,7 +115,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
 
     // If the image_url is not supplied, we use the one that we stashed during
     // the run operation.
-    let image_url = image_url.unwrap_or(config.image_url);
+    let image_url = ImageUrl::parse(&image_url.unwrap_or(config.image_url))?;
 
     // As for preserved_paths, we join all the paths we know of.
     // There is the downside of not being able to forget a path that was once preserved.
@@ -140,7 +140,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     let img_manifest = ImageManifest::new(
         num_shards, passphrase_file.is_some(), cpu_budget.into());
 
-    let store = store::from_url(&image_url)?;
+    let store = image_url.store();
     let shard_upload_cmds = shard::upload_cmds(
         &img_manifest, passphrase_file.as_ref(), &*store)?;
 
@@ -148,7 +148,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // containers that vanish during checkpoints. We don't wait for the metrics
     // process to complete, it would delay checkpointing.
     let _metrics_p_reaper = {
-        let event = json!({"action": "checkpoint_start", "image_url": image_url});
+        let event = json!({"action": "checkpoint_start", "image_url": image_url.to_string()});
         emit_metrics(event)?.map(|p| p.reap_on_drop())
     };
 

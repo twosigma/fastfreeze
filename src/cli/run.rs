@@ -29,7 +29,7 @@ use structopt::StructOpt;
 use serde::{Serialize, Deserialize};
 use crate::{
     consts::*,
-    store::{self, Store},
+    store::{ImageUrl, Store},
     virt,
     cli::{ExitCode, install},
     image::{ManifestFetchResult, ImageManifest, shard, check_passphrase_file_exists},
@@ -185,7 +185,7 @@ pub fn is_app_running() -> bool {
 // It returns Stats, that's the transfer speeds and all given by criu-image-streamer,
 // and the duration since the checkpoint happened. This is helpful for emitting metrics.
 fn restore(
-    image_url: String,
+    image_url: ImageUrl,
     mut preserved_paths: HashSet<PathBuf>,
     passphrase_file: Option<PathBuf>,
     shard_download_cmds: Vec<String>,
@@ -242,7 +242,7 @@ fn restore(
         let passphrase_file = passphrase_file.or(old_config.passphrase_file);
 
         let config = AppConfig {
-            image_url,
+            image_url: image_url.to_string(),
             preserved_paths,
             passphrase_file,
             created_at: SystemTime::now(),
@@ -325,14 +325,14 @@ fn restore(
 }
 
 fn run_from_scratch(
-    image_url: String,
+    image_url: ImageUrl,
     preserved_paths: HashSet<PathBuf>,
     passphrase_file: Option<PathBuf>,
     app_cmd: Vec<OsString>,
 ) -> Result<()>
 {
     let config = AppConfig {
-        image_url,
+        image_url: image_url.to_string(),
         preserved_paths,
         passphrase_file,
         app_clock: 0,
@@ -425,7 +425,7 @@ fn ensure_non_conflicting_pid() -> Result<()> {
 }
 
 fn do_run(
-    image_url: String,
+    image_url: ImageUrl,
     app_args: Vec<String>,
     preserved_paths: HashSet<PathBuf>,
     passphrase_file: Option<PathBuf>,
@@ -447,7 +447,7 @@ fn do_run(
     // we also prepare the store during restore, because we want to make sure
     // we can checkpoint after a restore.
     trace!("Preparing image store");
-    let store = store::from_url(&image_url)?;
+    let store = image_url.store();
     store.prepare(true)?;
 
     let run_mode = if no_restore {
@@ -542,12 +542,7 @@ impl super::CLI for Run {
                 }
             };
 
-            let default_app_name = ||
-                image_url
-                .split('/')
-                .filter(|c| !c.is_empty())
-                .last()
-                .unwrap_or("default"); // unwrap() should never fail, but we never know.
+            let image_url = ImageUrl::parse(&image_url)?;
 
             // Note: the following may fork a child to enter the new PID namespace,
             // The parent will be kept running to monitor the child.
@@ -558,7 +553,7 @@ impl super::CLI for Run {
                 (_,          true,  _, false) => bail!("`fastfreeze install` must first be ran"),
 
                 (Some(name), false, Cap::Full, _) => container::create(&name)?,
-                (None,       false, Cap::Full, _) => container::create(default_app_name())?,
+                (None,       false, Cap::Full, _) => container::create(image_url.image_name())?,
                 (Some(_),    false, _,         _) => bail!("--app-name cannot be used as PID namespaces are not available"),
 
                 (None,       false, Cap::MountOnly, false) => container::create_virt_install_env()?,

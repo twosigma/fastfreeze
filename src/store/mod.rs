@@ -17,6 +17,7 @@ mod s3;
 mod gs;
 
 use anyhow::{Result, Context};
+use std::fmt;
 use std::io::Write;
 use url::{Url, ParseError};
 use crate::process::{Stdio, Command};
@@ -97,34 +98,62 @@ pub trait FileExt: File {
 }
 impl FileExt for dyn File {}
 
-/// Returns a store corresponding to the provided `url`.
-/// If url does not start with "scheme:", it is assumed to be a file path.
-pub fn from_url(url_str: &str) -> Result<Box<dyn Store>> {
-    Ok(match Url::parse(url_str) {
-        Err(ParseError::RelativeUrlWithoutBase) => {
-            ensure!(url_str.starts_with('/'),
-                "Please use an absolute path for the image path");
-            Box::new(local::Store::new(url_str))
-        },
-        Err(e) => bail!(e),
-        Ok(url) => {
-            match url.scheme() {
-                "file" => {
-                    // The url parser prefix the relative paths with /, and we
-                    // have no way to know once parsed. Which is why we do error
-                    // detection here, and not in local::Store.
-                    ensure!(url_str.starts_with("file:/"),
+pub struct ImageUrl(Url);
+
+impl ImageUrl {
+    /// If url does not start with "scheme:", it is assumed to be a file path.
+    pub fn parse(url_str: &str) -> Result<Self> {
+        match Url::parse(url_str) {
+            Err(ParseError::RelativeUrlWithoutBase) => {
+                ensure!(url_str.starts_with('/'),
                         "Please use an absolute path for the image path");
-                    Box::new(local::Store::new(url.path()))
-                },
-                "s3"   => Box::new(s3::Store::new(url)),
-                "gs"   => Box::new(gs::Store::new(url)),
-                _ => bail!("Unknown image scheme {}", url),
+                Self::parse(&format!("file:{}", url_str))
+            },
+            Err(e) => bail!(e),
+            Ok(url) => {
+                {
+                    let path = url.path();
+                    ensure!(url.path_segments().is_some(), "Image URL path is empty");
+                    ensure!(path.chars().last() != Some('/'), "Image URL path should not end with a trailing /");
+                }
+
+                Ok(Self(match url.scheme() {
+                    "file" => {
+                        // The url parser prefix the relative paths with /, and we
+                        // have no way to know once parsed. Which is why we do error
+                        // detection here, and not in local::Store.
+                        ensure!(url_str.starts_with("file:/"),
+                            "Please use an absolute path for the image path");
+                        url
+                    },
+                    "s3" | "gs"  => url,
+                    _ => bail!("Unknown image scheme {}", url),
+                }))
             }
         }
-    })
+    }
+
+    pub fn image_name(&self) -> &str {
+        // The unwraps are okay, we already validated that we have some in parse_image_url().
+        self.0.path_segments().unwrap().last().unwrap()
+    }
+
+    pub fn store(&self) -> Box<dyn Store> {
+        match self.0.scheme() {
+            "file" => Box::new(local::Store::new(self.0.path())),
+            "s3"   => Box::new(s3::Store::new(self.0.clone())),
+            "gs"   => Box::new(gs::Store::new(self.0.clone())),
+            // panic!() is okay, validation is already done in parse().
+            _      => panic!("Unknown image scheme"),
+        }
+    }
 }
 
+impl fmt::Display for ImageUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -132,8 +161,8 @@ mod test {
 
     #[test]
     fn test_from_url() {
-        assert!(from_url("file:/tmp/img").is_ok());
-        assert!(from_url("file:tmp/img").is_err());
+        assert!(ImageUrl::parse("file:/tmp/img").is_ok());
+        assert!(ImageUrl::parse("file:tmp/img").is_err());
     }
 
     fn test_store_read_write(store: &Box<dyn Store>) -> Result<()> {
@@ -146,7 +175,7 @@ mod test {
 
     #[test]
     fn test_read_write() -> Result<()> {
-        test_store_read_write(&from_url("file:/tmp/ff-test-files")?)?;
+        test_store_read_write(&ImageUrl::parse("file:/tmp/ff-test-files")?.store())?;
         Ok(())
     }
 }
