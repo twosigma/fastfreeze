@@ -21,14 +21,13 @@ use std::{
     path::PathBuf,
     io::ErrorKind,
     path::Path,
-    os::unix::io::{RawFd, AsRawFd},
+    os::unix::io::{RawFd},
     collections::HashSet,
 };
 use nix::{
     mount::{mount, MsFlags},
     sched::{unshare, CloneFlags},
     sys::signal::{self, kill},
-    sys::termios::tcgetattr,
     sys::wait::{waitpid, WaitStatus},
     sys::stat::Mode,
     unistd::{
@@ -36,6 +35,7 @@ use nix::{
         getuid, getgid, Uid, Gid,
         lseek64, Whence, dup2, close,
     },
+    errno::Errno,
     fcntl::{fcntl, FcntlArg, open, OFlag},
 };
 
@@ -44,7 +44,10 @@ use crate::{
     consts::*,
     cli::{ExitCode, install, run::is_app_running},
     process::{monitor_child, ChildDied},
-    util::{create_dir_all, set_tmp_like_permissions, openat, setns, readlink_fd},
+    util::{
+        create_dir_all, set_tmp_like_permissions, openat,
+        setns, readlink_fd, get_inheritable_fds, is_term
+    },
     logger,
 };
 
@@ -74,7 +77,7 @@ pub fn ns_capabilities() -> Result<NSCapabilities> {
                 Ok(matches!(result, WaitStatus::Exited(_, 0)))
             },
         }
-    };
+    }
 
     let can_create_mount_ns = test_in_child_process(|| -> Result<()> {
         unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS)?;
@@ -274,36 +277,32 @@ fn cleanup_current_container() {
 // PTY "namespace"
 //////////////////////////////////
 
-/// Returns fds among 0,1,2 that corresponds to a TTY.
-pub fn get_tty_fds() -> Vec<RawFd> {
-    // We examine stdin/stdout/stderr and select what responds to a TTY.
-    [0,1,2].iter()
-        .copied()
-        .filter(|&fd| tcgetattr(fd).is_ok())
-        .collect()
-}
-
 // Takes an array of TTY fds, and return the path (/dev/pts/X) of the TTY.
 // Note that we take an array of TTY fds to ensure that they all point to the
 // same TTY, but semantically, we would just be taking just a single fd.
-fn get_tty_path(tty_fds: &[RawFd]) -> Result<PathBuf> {
+fn get_tty_path(tty_fds: &[RawFd]) -> Result<Option<PathBuf>> {
+    if tty_fds.is_empty() {
+        return Ok(None);
+    }
+
     let paths = tty_fds.iter()
         .copied()
         .map(readlink_fd)
         .collect::<Result<HashSet<_>>>()?;
 
     assert!(!paths.is_empty());
-    ensure!(paths.len() == 1, "Multiple TTYs detected");
-    Ok(paths.into_iter().next().unwrap())
+    ensure!(paths.len() == 1, "Multiple TTYs detected ({:?}), this is not supported", paths);
+    Ok(paths.into_iter().next())
 }
 
-fn prepare_pty_namespace() -> Result<()> {
-    // We need a new pts namespace during checkpoint/restore because PTYs
-    // created in the container (by a program like tmux or sshd) need to be
-    // conflict free when restoring (/dev/pts/N should be available), so we need
-    // some amount of virtualization.
-    // We'll relocate the current TTY at /dev/pts/0 to increase compatibility
-    // with programs, even though it's unlikely that it is useful.
+fn prepare_pty_namespace(inheritable_tty_path: Option<&PathBuf>) -> Result<()> {
+    // We need a new pts namespace during checkpoint/restore because:
+    // 1) we pass the current pty (what we currently hold as stderr for example)
+    //    to the child. It needs to be deterministic because when we restore, it
+    //    needs to have the same name. We'll use /dev/pts/0 for passing down our pty.
+    // 2) PTYs created in the container (by a program like tmux or sshd)
+    //    need to be conflict free when restoring (/dev/pts/N should be available),
+    //    so we need some amount of virtualization.
     // We want to mount new namespace on /dev/pts, but we want to map our current pty
     // to /dev/pts/0. We'll do some trickeries with mount binds to achieve that.
     // Another solution would be to create a new pty, and proxy data to/from our
@@ -311,9 +310,7 @@ fn prepare_pty_namespace() -> Result<()> {
 
     // Step 1: Make a bind backup of our /dev/pts/N to CONTAINER_PTY because we are
     // about to hide it with the next mount.
-    let tty_fds = get_tty_fds();
-    if !tty_fds.is_empty() {
-        let tty_path = get_tty_path(&tty_fds)?;
+    if let Some(ref tty_path) = inheritable_tty_path {
         debug!("Mapping PTY {} to a new PTY namespace as /dev/pts/0", tty_path.display());
         fs::File::create(&*CONTAINER_PTY)
             .with_context(|| format!("Failed to create file {}", CONTAINER_PTY.display()))?;
@@ -337,37 +334,33 @@ fn prepare_pty_namespace() -> Result<()> {
     // For this to work, /dev/pts/0 must exist. So we create a dummy pts
     // that we keep open to ensure that the mount bind survives.
     // We leak the fd on purpose so it doesn't get closed.
-    if !tty_fds.is_empty() {
-        let ptmx_fd = fs::OpenOptions::new().read(true).write(true).open("/dev/ptmx")
+    if inheritable_tty_path.is_some() {
+        let ptmx_fd = fs::OpenOptions::new()
+            .read(true).write(true)
+            .open("/dev/ptmx")
             .context("Failed to open /dev/ptmx to create a dummy PTY")?;
         std::mem::forget(ptmx_fd);
 
         mount_bind(&*CONTAINER_PTY, "/dev/pts/0")?;
-
-        // The application inherits our PTY. The /proc/self/fdinfo/<N>
-        // information will show a mount id outside of the mount namespace and that
-        // makes CRIU unhappy. We re-open the PTYs bringing them into our own mount
-        // namespace.
-        let new_pts_0 = fs::OpenOptions::new().read(true).write(true).open("/dev/pts/0")
-            .context("Failed to reopen /dev/pts/0")?;
-
-        for &fd in &tty_fds {
-            // dup2 does not copy the close-on-exec flag, which is what we want.
-            dup2(new_pts_0.as_raw_fd(), fd)
-                .context("dup2() failed")?;
-        }
     }
 
-    // Step 4: If one of the stdin/stdout/stderr is a regular file, we need to
-    // reopen the target to get it into our mount namespace, otherwise it spooks CRIU.
-    // Note: at some point, we might want to do this for all fds.
+    Ok(())
+}
+
+fn reopen_fds(inheritable_fds: &[RawFd], inheritable_tty_fds: &[RawFd]) -> Result<()> {
     fn reopen_fd(fd: RawFd, path: &Path) -> Result<()> {
         let flags = fcntl(fd, FcntlArg::F_GETFL)?;
         let flags = unsafe { OFlag::from_bits_unchecked(flags) };
 
-        let pos = lseek64(fd, 0, Whence::SeekCur).context("lseek() failed")?;
+        let pos = match lseek64(fd, 0, Whence::SeekCur) {
+            Ok(pos) => Some(pos),
+            Err(e) if e.as_errno() == Some(Errno::ESPIPE) => None,
+            Err(e) => Err(e).context("lseek() failed")?,
+        };
         let new_fd = open(path, flags, Mode::empty()).context("open() failed")?;
-        lseek64(new_fd, pos, Whence::SeekSet).context("lseek() failed")?;
+        if let Some(pos) = pos {
+            lseek64(new_fd, pos, Whence::SeekSet).context("lseek() failed")?;
+        }
 
         dup2(new_fd, fd).context("dup2() failed")?;
         close(new_fd).context("close() failed")?;
@@ -375,22 +368,29 @@ fn prepare_pty_namespace() -> Result<()> {
         Ok(())
     }
 
-    for &fd in &[0,1,2] {
-        if tty_fds.contains(&fd) {
-            continue;
-        }
+    for &fd in inheritable_fds {
+        let path = if inheritable_tty_fds.contains(&fd) {
+            PathBuf::from("/dev/pts/0")
+        } else {
+            readlink_fd(fd)?
+        };
 
-        // The target can be a pipe, in which case we don't want to reopen it.
-        // We open re-open regular files.
-        let path = readlink_fd(fd)?;
-        if !path.starts_with("/") {
-            continue;
+        // Re-open files that are accessible from the file system.
+        if path.starts_with("/") {
+            reopen_fd(fd, &path)
+                .with_context(|| format!("Failed to re-open {}", path.display()))?;
         }
-
-        reopen_fd(fd, &path)
-            .with_context(|| format!("Failed to re-open {}", path.display()))?;
     }
 
+    Ok(())
+}
+
+fn prepare_pty_namespace_and_reopen_fds() -> Result<()> {
+    let fds = get_inheritable_fds()?;
+    let tty_fds: Vec<_> = fds.iter().cloned().filter(|fd| is_term(*fd)).collect();
+    let tty_path = get_tty_path(&tty_fds)?;
+    prepare_pty_namespace(tty_path.as_ref())?;
+    reopen_fds(&fds, &tty_fds)?;
     Ok(())
 }
 
@@ -508,7 +508,7 @@ pub fn create(name: &str) -> Result<()> {
 
     prepare_user_namespace()?;
     prepare_fs_namespace(name)?;
-    prepare_pty_namespace()?;
+    prepare_pty_namespace_and_reopen_fds()?;
 
     // The following forks and we become the init process of the container. We
     // prefer doing this compared to having the application being the init
@@ -525,7 +525,7 @@ pub fn create_virt_install_env() -> Result<()> {
 
     prepare_user_namespace()?;
     prepare_fs_namespace_virt_install_only()?;
-    prepare_pty_namespace()?;
+    prepare_pty_namespace_and_reopen_fds()?;
 
     Ok(())
 }
