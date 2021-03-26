@@ -611,10 +611,10 @@ impl super::CLI for Run {
                 info!("Application exited with exit_code=0");
             }
 
-            // The existance of the app config tells indicates if the app is
-            // currently running. This is used in is_app_running().
+            // The existance of the app config indicates if the app may b
+            // running (see is_app_running()), so it's better to take it out.
             if let Err(e) = AppConfig::remove() {
-                error!("{}", e);
+                error!("{}, but it's okay", e);
             }
 
             app_exit_result

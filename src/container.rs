@@ -397,12 +397,8 @@ fn prepare_pty_namespace_and_reopen_fds() -> Result<()> {
 // PID namespace
 //////////////////////////////////
 
-fn monitor_container(container_pid: Pid) -> ! {
-    let result = monitor_child(container_pid);
-
-    cleanup_current_container();
-
-    if let Err(e) = result {
+fn container_monitor_exit_process(monitor_child_result: Result<()>) -> ! {
+    if let Err(e) = monitor_child_result {
         // Our child logs errors when exiting, so we skip logging in this case
         match e.downcast_ref::<ChildDied>() {
             Some(ChildDied::Exited(_)) => {},
@@ -432,7 +428,9 @@ fn prepare_pid_namespace() -> Result<()> {
         write_container_pid_file(container_pid)
             .map_err(|e| { let _ = kill(container_pid, signal::SIGKILL); e })?;
 
-        monitor_container(container_pid);
+        let result = monitor_child(container_pid);
+        cleanup_current_container();
+        container_monitor_exit_process(result);
         // unreachable
     }
 
@@ -555,7 +553,8 @@ fn nsenter(name: &str) -> Result<()> {
     raise_all_effective_caps_to_ambient()?;
 
     if let ForkResult::Parent { child: pid } = fork()? {
-        monitor_container(pid);
+        let result = monitor_child(pid);
+        container_monitor_exit_process(result);
         // unreachable
     }
 
