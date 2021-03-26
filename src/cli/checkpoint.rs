@@ -77,7 +77,7 @@ pub struct Checkpoint {
 
     /// Amount of CPU at disposal. Possible values are [low, medium, high].
     /// Currently, `low` skips compression, `medium` uses lz4, and
-    /// high uses zstd.
+    /// `high` uses zstd.
     #[structopt(long, default_value="medium")]
     cpu_budget: CpuBudget,
 

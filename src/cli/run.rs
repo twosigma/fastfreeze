@@ -47,7 +47,8 @@ use crate::{
 use virt::time::Nanos;
 
 
-/// Run application. If a checkpoint image exists, the application is restored. Otherwise, the
+/// Run application.
+/// If a checkpoint image exists, the application is restored. Otherwise, the
 /// application is run from scratch.
 #[derive(StructOpt, PartialEq, Debug, Serialize)]
 #[structopt(after_help("\
@@ -82,8 +83,8 @@ pub struct Run {
     #[structopt(short, long, name="url")]
     image_url: Option<String>,
 
-    /// Application arguments, used when running the app from scratch.
-    /// Ignored during restore.
+    /// Application command, used when running the app from scratch.
+    /// When absent, FastFreeze runs in restore-only mode.
     // Note: Type should be OsString, but structopt doesn't like it
     // Also, we wish to pass min_values=1, but it's not working.
     #[structopt()]
@@ -443,7 +444,7 @@ fn ensure_non_conflicting_pid() -> Result<()> {
 
 fn do_run(
     image_url: ImageUrl,
-    app_args: Vec<String>,
+    app_args: Option<Vec<String>>,
     preserved_paths: HashSet<PathBuf>,
     passphrase_file: Option<PathBuf>,
     no_restore: bool,
@@ -476,8 +477,8 @@ fn do_run(
             .context(ExitCode(EXIT_CODE_RESTORE_FAILURE))?
     };
 
-    match run_mode {
-        RunMode::Restore { img_manifest } => {
+    match (run_mode, app_args) {
+        (RunMode::Restore { img_manifest }, _) => {
             let shard_download_cmds = shard::download_cmds(
                 &img_manifest, passphrase_file.as_ref(), &*store)?;
 
@@ -493,7 +494,9 @@ fn do_run(
                     })
                 )?;
         }
-        RunMode::FromScratch => {
+        (RunMode::FromScratch, None) =>
+            bail!("No application to restore, but running in restore-only mode, aborting"),
+        (RunMode::FromScratch, Some(app_args)) => {
             let app_args = app_args.into_iter().map(|s| s.into()).collect();
             with_metrics("run_from_scratch", ||
                 run_from_scratch(image_url, preserved_paths, passphrase_file, app_args),
@@ -536,23 +539,31 @@ impl super::CLI for Run {
                 allow_bad_image_version, passphrase_file, preserved_paths,
                 leave_stopped, verbose: _, app_name, no_container } = self;
 
-            ensure!(!app_args.is_empty() && !app_args[0].is_empty(),
-                    "Please provide a command to run");
+            // We allow app_args to be empty. This indicates a restore-only mode.
+            let app_args = if app_args.is_empty() {
+                info!("Running in restore-only mode as no command is given");
+                None
+            } else {
+                ensure!(!app_args[0].is_empty(), "Empty command given");
+                Some(app_args)
+            };
 
             let nscaps = container::ns_capabilities()?;
 
-            let image_url = match image_url {
-                Some(image_url) => image_url,
-                None => {
+            let image_url = match (image_url, app_args.as_ref()) {
+                (Some(image_url), _) => image_url,
+                (None, None) =>
+                    bail!("--image-url is necessary when running in restore-only mode"),
+                (None, Some(_)) if nscaps.has_restrictions() => {
                     // We don't want to use a default image-url location when we
                     // have restrictions creating namespaces. We are most likely in docker/kubernetes,
                     // and the file system is going to disappear as soon as the container shuts down.
                     // We cannot assume where the image can be safely saved.
-                    ensure!(!nscaps.has_restrictions(),
-                        "Please provide a checkpoint image location with \
-                        `--image-url file:/persistant_volume/image`");
-
-                    let image_path = DEFAULT_IMAGE_DIR.join(default_image_name(&app_args));
+                    bail!("Please provide a checkpoint image location with \
+                          `--image-url file:/persistant_volume/image`")
+                },
+                (None, Some(app_args)) => {
+                    let image_path = DEFAULT_IMAGE_DIR.join(default_image_name(app_args));
                     let image_url = format!("file:{}", image_path.display());
                     info!("image-url is {}", image_url);
                     image_url
