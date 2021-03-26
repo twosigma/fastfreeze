@@ -1,13 +1,11 @@
 FROM debian:10
 
 RUN apt-get update
-RUN apt-get install -y xz-utils libcap2-bin
+RUN apt-get install -y xz-utils libcap2-bin jq
 
 #RUN apt-get install -y strace procps elfutils gdb binutils vim patchelf
 
 COPY fastfreeze.tar.xz /tmp
-
-RUN apt-get install -y jq
 
 RUN set -ex; \
   tar xf /tmp/fastfreeze.tar.xz -C /opt; \

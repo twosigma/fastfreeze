@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ex
+set -eux
 
 # Before running this, run ./build.sh
 # TODO We need a bit more tests. Perhaps using something like Python would make
@@ -28,22 +28,24 @@ sudo bash -c 'echo 0 > /proc/sys/kernel/yama/ptrace_scope'
 # In the following, we don't need cap_sys_ptrace, but it makes Docker
 # relax its seccomp filters on kcmp(), which CRIU needs.
 
+# Forget to put cap-add, and get Permission Denied
 docker run \
   --rm \
   --user nobody \
   --cap-add=cap_sys_ptrace \
   --name ff \
-  --mount type=bind,source=$IMAGE_DIR,target=/images \
-  --env FF_METRICS_RECORDER=/images/show_metrics.sh \
+  --mount type=bind,source=$IMAGE_DIR,target=$IMAGE_DIR \
+  --env FF_METRICS_RECORDER=$IMAGE_DIR/show_metrics.sh \
   fastfreeze-test:latest \
   fastfreeze run -v \
-    --image-url file:/images/test-1 \
-    --passphrase-file /images/encryption_key -- sleep 30d &
-sleep 2 # wait for app started
+    --image-url $IMAGE_DIR/test-image \
+    --on-app-ready "touch $IMAGE_DIR/run1.ready" \
+    --passphrase-file $IMAGE_DIR/encryption_key -- \
+    sleep 30d &
 
-# Forget to put cap-add, and get Permission Denied
+timeout 10 bash -c "while [ ! -e $IMAGE_DIR/run1.ready ]; do sleep 0.1; done"
 
-docker exec --env FF_METRICS_RECORDER=/images/show_metrics.sh ff fastfreeze checkpoint -v
+docker exec --env FF_METRICS_RECORDER=$IMAGE_DIR/show_metrics.sh ff fastfreeze checkpoint -v
 
 wait
 
@@ -52,13 +54,18 @@ docker run \
   --user nobody \
   --cap-add=cap_sys_ptrace \
   --name ff \
-  --mount type=bind,source=$IMAGE_DIR,target=/images \
-  --env FF_METRICS_RECORDER=/images/show_metrics.sh \
+  --mount type=bind,source=$IMAGE_DIR,target=$IMAGE_DIR \
+  --env FF_METRICS_RECORDER=$IMAGE_DIR/show_metrics.sh \
   fastfreeze-test:latest \
   fastfreeze run -v \
-    --image-url file:/images/test-1 \
-    --passphrase-file /images/encryption_key -- sleep 30d &
-sleep 2 # wait for app restore
+    --image-url $IMAGE_DIR/test-image \
+    --on-app-ready "touch $IMAGE_DIR/run2.ready" \
+    --passphrase-file $IMAGE_DIR/encryption_key -- \
+    sleep 30d &
+
+timeout 10 bash -c "while [ ! -e $IMAGE_DIR/run2.ready ]; do sleep 0.1; done"
+
+docker exec --env FF_METRICS_RECORDER=$IMAGE_DIR/show_metrics.sh ff fastfreeze wait -v
 
 docker exec ff fastfreeze checkpoint
 

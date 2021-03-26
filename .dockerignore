@@ -1,0 +1,6 @@
+target
+dist
+deps/criu-image-streamer/target
+deps/libvirtcpuid/musl
+**/*.o
+.git
