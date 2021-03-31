@@ -548,20 +548,11 @@ impl super::CLI for Run {
                 Some(app_args)
             };
 
-            let nscaps = container::ns_capabilities()?;
 
             let image_url = match (image_url, app_args.as_ref()) {
                 (Some(image_url), _) => image_url,
                 (None, None) =>
                     bail!("--image-url is necessary when running in restore-only mode"),
-                (None, Some(_)) if nscaps.has_restrictions() => {
-                    // We don't want to use a default image-url location when we
-                    // have restrictions creating namespaces. We are most likely in docker/kubernetes,
-                    // and the file system is going to disappear as soon as the container shuts down.
-                    // We cannot assume where the image can be safely saved.
-                    bail!("Please provide a checkpoint image location with \
-                          `--image-url file:/persistant_volume/image`")
-                },
                 (None, Some(app_args)) => {
                     let image_path = DEFAULT_IMAGE_DIR.join(default_image_name(app_args));
                     let image_url = format!("file:{}", image_path.display());
@@ -569,9 +560,9 @@ impl super::CLI for Run {
                     image_url
                 }
             };
-
             let image_url = ImageUrl::parse(&image_url)?;
 
+            let nscaps = container::ns_capabilities()?;
             // Note: the following may fork a child to enter the new PID namespace,
             // The parent will be kept running to monitor the child.
             // The execution continues as the child process.
