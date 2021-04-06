@@ -575,7 +575,7 @@ impl super::CLI for Run {
                 (None,       false, Cap::Full, _) => container::create(image_url.image_name())?,
                 (Some(_),    false, _,         _) => bail!("--app-name cannot be used as PID namespaces are not available"),
 
-                (None,       false, Cap::MountOnly, false) => container::create_virt_install_env()?,
+                (None,       false, Cap::MountOnly, false) => container::create_without_pid_ns()?,
                 (None,       false, Cap::None,      false) => bail!("`fastfreeze install` must first be ran \
                                                                     as namespaces are not available"),
                 (None,       _,     _,              true) => {},

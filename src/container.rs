@@ -12,9 +12,6 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-// In non-docker and non-kubernetes environments, we can create a container
-// because we don't have the /proc/sys read-only restriction.
-
 use anyhow::{Result, Context};
 use std::{
     fs,
@@ -50,6 +47,54 @@ use crate::{
     },
     logger,
 };
+
+/// FastFreeze requires the following to run applications:
+/// 1) Hijack the ELF system loader (/lib/ld-linux.so). This is important to achieve the following:
+///    a) Virtualize CPUID, which needs to happen before libc's ELF loader run.
+///    b) Force time user-space virtualization to all processes by LD_PRELOADing libvirttime.
+///       Even if a program clears the environment, our hijacking loader will set LD_PRELOAD before
+///       any program gets to initialize.
+///
+/// 2) Control PIDs of processes. During restore, we need to have the same PIDs as
+///    during checkpointing.
+///
+/// 3) Optionally, virtualize /dev/pts/N to avoid conflits.
+///
+/// 4) Optionally, gain CAP_SYS_ADMIN (or CAP_CHECKPOINT_RESTORE) so that we can
+///    restore the /proc/self/exe link.
+///
+/// We need a few namespaces to accomplish all this.
+/// a) First, we need a user namespace to be able to create other namespaces. This also
+///    gives us 4).
+/// b) Then we need a mount namespace,  to do 1) and 3).
+/// c) Then we need a PID namespace to do 3).
+///
+/// We distinguish 3 cases of operations:
+/// * NSCapabilities::Full: We have access to all namespaces. Great.
+/// * NSCapabilities::MountOnly: We don't have access to PID namespaces because /proc has
+///   subdirectories that are read-only mounted preventing a remount of /proc. This
+///   is typical within a Kubernetes environment.
+/// * NSCapabilities::None: We can't create any sort of namespaces. That's typical when running
+///   within Docker. In this case, our ELF loader must be installed manually, as root.
+///   This is done with `fastfreeze install`.
+///   Note that we don't want to set any of executables setuid. It makes them secure,
+///   which creates all sorts of problems, such as LD_LIBRARY_PATH not being honored.
+///
+/// Note that only with NSCapabilities::Full can we run multiple applications at
+/// the same time (their PIDs will collide otherwise). This is why only in that case we
+/// mount bind /var/tmp/fastfreeze to /tmp/fastfreeze/app_name.
+///
+/// The way the functionality of this file is the following:
+/// cli/run.rs calls ns_capabilities() to figure out what namespace we have available. It then
+/// figures out what to do.
+/// Under NSCapabilities::Full:
+/// - `create(app_name)` is called to create the namespaces.
+/// - `nsenter(app_name)` is called to enter the namespaces (used during checkpointing).
+/// Under NSCapabilities::MountOnly:
+/// - `create_without_pid_ns()` is called to create the user and mount namespace.
+/// - `nsenter_without_pid_ns()` is called to enter the namespaces.
+/// The `nsenter*()` functions are called from the same entry point, `maybe_nsenter_app()`
+
 
 #[derive(PartialEq)]
 pub enum NSCapabilities {
@@ -518,7 +563,7 @@ pub fn create(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn create_virt_install_env() -> Result<()> {
+pub fn create_without_pid_ns() -> Result<()> {
     debug!("Creating a user and mount namespace to virtualize the system ELF loader");
 
     prepare_user_namespace()?;
@@ -561,26 +606,31 @@ fn nsenter(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn maybe_nsenter_virt_install_env() -> Result<()> {
+fn nsenter_without_pid_ns() -> Result<()> {
+    let namespaces = [
+        ("ns/user", CloneFlags::CLONE_NEWUSER),
+        ("ns/mnt",  CloneFlags::CLONE_NEWNS),
+    ];
+
+    let container_proc_dir = fs::File::open(format!("/proc/{}", APP_ROOT_PID))?;
+
+    for (ns_path, clone_flag) in &namespaces {
+        let nsfile = openat(&container_proc_dir, ns_path)?;
+        setns(&nsfile, *clone_flag)?;
+    }
+
+    raise_all_effective_caps_to_ambient()?;
+    Ok(())
+}
+
+fn maybe_nsenter_without_pid_ns() -> Result<()> {
     let current_user_ns = fs::read_link("/proc/self/ns/user")
         .context("Failed to readlink(/proc/self/ns/user)")?;
     let target_user_ns = fs::read_link(format!("/proc/{}/ns/user", APP_ROOT_PID))
         .context("Failed to readlink(/proc/self/ns/user)")?;
 
     if current_user_ns != target_user_ns {
-        let namespaces = [
-            ("ns/user", CloneFlags::CLONE_NEWUSER),
-            ("ns/mnt",  CloneFlags::CLONE_NEWNS),
-        ];
-
-        let container_proc_dir = fs::File::open(format!("/proc/{}", APP_ROOT_PID))?;
-
-        for (ns_path, clone_flag) in &namespaces {
-            let nsfile = openat(&container_proc_dir, ns_path)?;
-            setns(&nsfile, *clone_flag)?;
-        }
-
-        raise_all_effective_caps_to_ambient()?;
+        nsenter_without_pid_ns()?;
     }
 
     Ok(())
@@ -589,14 +639,14 @@ pub fn maybe_nsenter_virt_install_env() -> Result<()> {
 /// Enter the application container when the user provides us with its app name.
 /// If no container name is provided, we enter the container that we see running.
 /// If we see no containers, we'll see if an application is running outside of a
-/// container which is what happens with Docker/Kubernetes.
+/// proper container which is what happens with Docker/Kubernetes.
 pub fn maybe_nsenter_app(app_name: Option<&String>) -> Result<()> {
     if let Some(ref app_name) = app_name {
         ensure!(!app_name.is_empty(), "app_name is empty");
         nsenter(app_name)
     } else {
         match get_running_containers()?.as_slice() {
-            [] if is_app_running() => maybe_nsenter_virt_install_env(),
+            [] if is_app_running() => maybe_nsenter_without_pid_ns(),
             [] => bail!("Error: No application is running"),
             [single_container] => nsenter(single_container),
             names => {
