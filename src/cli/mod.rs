@@ -13,11 +13,11 @@
 //  limitations under the License.
 
 pub mod run;
-pub mod checkpoint;
-pub mod extract;
-pub mod wait;
+mod checkpoint;
+mod extract;
+mod wait;
 pub mod install;
-pub mod main;
+mod main;
 
 use crate::consts::*;
 

@@ -35,7 +35,7 @@ use super::{
     // subcommand version is not useful, disable it.
     global_setting(AppSettings::VersionlessSubcommands),
 )]
-#[structopt(after_help("    restore-only is achived by using \
+#[structopt(after_help("    restore-only is achieved by using \
 the `run` subcommand without passing the application command-line arguments"
 ))]
 pub struct Opts {

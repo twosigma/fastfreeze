@@ -85,10 +85,8 @@ pub struct Run {
 
     /// Application command, used when running the app from scratch.
     /// When absent, FastFreeze runs in restore-only mode.
-    // Note: Type should be OsString, but structopt doesn't like it
-    // Also, we wish to pass min_values=1, but it's not working.
     #[structopt()]
-    app_args: Vec<String>,
+    app_args: Vec<OsString>,
 
     /// Shell command to run once the application is running.
     // Note: Type should be OsString, but structopt doesn't like it
@@ -444,7 +442,7 @@ fn ensure_non_conflicting_pid() -> Result<()> {
 
 fn do_run(
     image_url: ImageUrl,
-    app_args: Option<Vec<String>>,
+    app_args: Option<Vec<OsString>>,
     preserved_paths: HashSet<PathBuf>,
     passphrase_file: Option<PathBuf>,
     no_restore: bool,
@@ -507,18 +505,21 @@ fn do_run(
     Ok(())
 }
 
-fn default_image_name(app_args: &[String]) -> String {
+fn default_image_name(app_args: &[OsString]) -> Result<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    fn program_name(cmd: &str) -> String {
-        // unwrap() is fine, we'll error earlier if cmd is empty.
-        cmd.split('/').last().unwrap().to_string()
+    fn program_name(cmd: &OsString) -> Result<String> {
+        Ok(Path::new(cmd)
+            .file_name().ok_or_else(||
+                anyhow!("Failed to determine program name from command name. \
+                         Please use `--image-url` to specify the image URL"))?
+            .to_string_lossy().into_owned())
     }
 
-    match app_args {
+    Ok(match app_args {
         [] => unreachable!(),
-        [app_name] => program_name(app_name),
+        [app_name] => program_name(app_name)?,
         _ =>  {
             let hash = {
                 let mut hasher = DefaultHasher::new();
@@ -526,9 +527,9 @@ fn default_image_name(app_args: &[String]) -> String {
                 hasher.finish()
             };
 
-            format!("{}-{:04x}", program_name(&app_args[0]), hash & 0xFFFF)
+            format!("{}-{:04x}", program_name(&app_args[0])?, hash & 0xFFFF)
         }
-    }
+    })
 }
 
 impl super::CLI for Run {
@@ -554,7 +555,7 @@ impl super::CLI for Run {
                 (None, None) =>
                     bail!("--image-url is necessary when running in restore-only mode"),
                 (None, Some(app_args)) => {
-                    let image_path = DEFAULT_IMAGE_DIR.join(default_image_name(app_args));
+                    let image_path = DEFAULT_IMAGE_DIR.join(default_image_name(app_args)?);
                     let image_url = format!("file:{}", image_path.display());
                     info!("image-url is {}", image_url);
                     image_url

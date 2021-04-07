@@ -22,7 +22,7 @@ use crate::{
     container,
 };
 
-/// Install FastFreeze, mostly to setup virtualization
+/// Install FastFreeze, required when namespaces are not available (e.g., Docker).
 #[derive(StructOpt, PartialEq, Debug, Serialize)]
 pub struct Install {
     /// Verbosity. Can be repeated
@@ -37,7 +37,7 @@ pub struct Install {
 
 pub fn is_ff_installed() -> Result<bool> {
     Ok(match LD_SYSTEM_PATH.read_link() {
-        Ok(path) => path.to_string_lossy().contains("virtcpuid"),
+        Ok(path) => path.eq(&*LD_VIRTCPUID_PATH),
         // EINVAL means the file is not a symlink.
         Err(e) if e.kind() == ErrorKind::InvalidInput => false,
         Err(e) => Err(e).with_context(||
