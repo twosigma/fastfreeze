@@ -13,3 +13,6 @@
 [submodule "deps/set_ns_last_pid"]
 	path = deps/set_ns_last_pid
 	url = https://github.com/twosigma/set_ns_last_pid.git
+[submodule "deps/gcsthin"]
+	path = deps/gcsthin
+	url = https://github.com/twosigma/gcsthin.git

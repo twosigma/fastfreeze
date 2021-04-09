@@ -71,11 +71,11 @@ FastFreeze includes the following high-level features:
 
 * **Low overhead**: FastFreeze needs less than 100MB of memory to perform a
   checkpoint or a restore. This memory headroom must be reserved in the
-  container in addition to what the application uses. Note that the standard S3
-  and GCS uploaders (`aws s3` and `gsutil`) tend to use a lot of memory (500MB)
-  due to the fact that they are written in Python and use large buffers. In the
-  future, we plan to open-source our custom uploaders that can be used with
-  FastFreeze.
+  container in addition to what the application uses. Note that the standard AWS
+  S3 uploader (`aws s3`) tends to use a lot of memory (500MB) because it is
+  written in Python and uses generous buffers. However, when using Google
+  Cloud Storage, FastFreeze uses a bundled fast and memory efficient uploader,
+  [gcsthin](https://github.com/twosigma/gcsthin), which uses 10MB of memory.
 
 * **Compression**: Checkpoint images can be compressed on the fly with lz4 or
   zstd. Setting the `--cpu-budget` option when checkpointing provides ways to

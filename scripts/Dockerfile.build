@@ -21,7 +21,8 @@ RUN set -ex; \
 # Build dependencies (CRIU, rust toolchain, libvirtcpuid, etc.)
 COPY deps deps
 # We clean first because we might have a copy of the host compiled binaries
-RUN make -C deps clean && make -C deps -j4
+# No -j2 because compiling two rust programs will make the memory usage blow up
+RUN make -C deps clean && make -C deps
 ENV CARGO=/root/.cargo/bin/cargo
 
 # Build FastFreeze Rust dependencies

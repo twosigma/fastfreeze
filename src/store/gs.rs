@@ -20,7 +20,7 @@ use crate::util::UrlExt;
 
 lazy_static! {
     static ref GS_CMD: String = std::env::var("GS_CMD")
-        .unwrap_or_else(|_| "gsutil".to_string());
+        .unwrap_or_else(|_| "gcsthin".to_string());
 }
 
 pub struct Store {

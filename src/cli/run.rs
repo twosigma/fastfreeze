@@ -63,7 +63,7 @@ ENVS:
     FF_FAKE_ROOT                Setting to 1 instructs FastFreeze to use uid=0 when creating user namespaces
     CRIU_OPTS                   Additional arguments to pass to CRIU, whitespace separated
     S3_CMD                      Command to access AWS S3. Defaults to 'aws s3'
-    GS_CMD                      Command to access Google Storage. Defaults to 'gsutil'
+    GS_CMD                      Command to access Google Storage. Defaults to 'gcsthin'
     TAR_CMD                     Command to untar the file system. Defaults to 'tar'
 
 EXIT CODES:

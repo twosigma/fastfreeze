@@ -15,7 +15,7 @@ $(DEPS_FILE):
 		build-essential pkg-config \
 		libprotobuf-dev libprotobuf-c-dev protobuf-c-compiler protobuf-compiler \
 		libbsd-dev iproute2 libcap-dev libnl-3-dev libnet-dev libaio-dev \
-		patchelf pv liblz4-tool zstd jq wget openssl
+		patchelf pv liblz4-tool zstd jq wget openssl libssl-dev
 	touch $@
 
 BUILDS := \
@@ -23,6 +23,7 @@ BUILDS := \
 	build_libvirtcpuid \
 	build_libvirttime \
 	build_criu_image_streamer \
+	build_gcsthin \
 	build_set_ns_last_pid \
 
 .PHONY: $(BUILDS) clean
@@ -43,6 +44,9 @@ build_libvirttime: | $(DEPS_FILE)
 build_criu_image_streamer: | $(DEPS_FILE) $(RUSTUP_DEP_FILE)
 	$(MAKE) -C criu-image-streamer
 
+build_gcsthin: | $(DEPS_FILE) $(RUSTUP_DEP_FILE)
+	$(MAKE) -C gcsthin
+
 build_set_ns_last_pid: | $(DEPS_FILE)
 	$(MAKE) -C set_ns_last_pid
 
@@ -51,4 +55,5 @@ clean:
 	$(MAKE) -C libvirtcpuid clean
 	$(MAKE) -C libvirttime clean
 	$(MAKE) -C criu-image-streamer clean
+	$(MAKE) -C gcsthin clean
 	$(MAKE) -C set_ns_last_pid clean

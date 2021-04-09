@@ -48,6 +48,7 @@ $(DIST_LIB_DIR):
 DIST_BINS := \
 	deps/criu/criu/criu \
 	deps/criu-image-streamer/criu-image-streamer \
+	deps/gcsthin/gcsthin \
 	deps/set_ns_last_pid/set_ns_last_pid \
 	target/$(BUILD)/fastfreeze \
 	$(shell which pv) \

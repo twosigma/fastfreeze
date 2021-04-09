@@ -29,7 +29,7 @@ use crate::{
 #[structopt(after_help("\
 ENVS:
     S3_CMD   Command to access AWS S3. Defaults to 'aws s3'
-    GS_CMD   Command to access Google Storage. Defaults to 'gsutil'"
+    GS_CMD   Command to access Google Storage. Defaults to 'gcsthin'"
 ))]
 pub struct Extract {
     /// Image URL, which can also be a regular local path
