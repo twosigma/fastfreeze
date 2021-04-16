@@ -147,7 +147,7 @@ pub fn ns_capabilities() -> Result<NSCapabilities> {
         // run() will emit a proper error message.
         (false, _) => NSCapabilities::None,
 
-        // We could be on Kubernetes, where we have a shadow /proc prevending us to
+        // We could be on Kubernetes, where we have a shadow /proc preventing us to
         // use a PID namespace correctly, but we can do mount namespaces.
         (true, false) => NSCapabilities::MountOnly,
 
@@ -219,7 +219,7 @@ fn prepare_user_namespace() -> Result<()> {
 
     // We preserve our uid/gid to make things as transparent as possible for the user.
     // However, it doesn't always work on old kernels. So FF_FAKE_ROOT will drop uid to 0.
-    let (new_uid, new_gid) = if std::env::var_os("FF_FAKE_ROOT") == Some("1".into()) {
+    let (new_uid, new_gid) = if std::env::var_os("FF_FAKE_ROOT").map_or(false, |v| v == "1") {
         (Uid::from_raw(0), Gid::from_raw(0))
     } else {
         (uid, gid)
@@ -250,6 +250,8 @@ fn mount_bind(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
 }
 
 fn prepare_fs_namespace(name: &str) -> Result<()> {
+    // Note: When this function fails, there's no undo for has already been done. That's okay.
+
     // We create the directory that holds all the containers with /tmp-like
     // permissions to allow other users to use the same directory. It's okay if it fails
     create_dir_all(&*CONTAINERS_DIR)?;
@@ -322,9 +324,9 @@ fn cleanup_current_container() {
 // PTY "namespace"
 //////////////////////////////////
 
-// Takes an array of TTY fds, and return the path (/dev/pts/X) of the TTY.
+// Takes a slice of TTY fds, and return the path (/dev/pts/X) of the TTY.
 // Note that we take an array of TTY fds to ensure that they all point to the
-// same TTY, but semantically, we would just be taking just a single fd.
+// same TTY, but semantically, we would be taking just a single fd.
 fn get_tty_path(tty_fds: &[RawFd]) -> Result<Option<PathBuf>> {
     if tty_fds.is_empty() {
         return Ok(None);
