@@ -62,14 +62,15 @@ impl Command {
         cmd
     }
 
-    pub fn new_shell<S: AsRef<OsStr>>(script: S) -> Self {
+    pub fn new_shell(script: &str) -> Self {
         // We use bash for pipefail support
         let mut inner = StdCommand::new("/bin/bash");
         inner.arg("-o").arg("pipefail")
-             .arg("-c").arg(&script);
+             .arg("-c").arg(script)
+             .arg("--");
         Self {
             inner,
-            display_args: vec![Self::arg_for_display(&script)],
+            display_args: vec![Self::arg_for_display(script)],
             show_cmd_on_spawn: true,
             stderr_log_prefix: None,
         }

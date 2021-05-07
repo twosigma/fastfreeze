@@ -14,7 +14,6 @@
 
 use anyhow::{Result, Context};
 use std::{
-    ffi::OsString,
     time::Instant,
 };
 use crate::{
@@ -25,8 +24,9 @@ use crate::{
 use serde_json::Value;
 
 lazy_static! {
-    static ref METRICS_RECORDER_PATH: Option<OsString> =
-        std::env::var_os("FF_METRICS_RECORDER");
+    static ref METRICS_RECORDER_PATH: Option<String> =
+        std::env::var_os("FF_METRICS_RECORDER")
+            .map(|s| s.into_string().expect("FF_METRICS_RECORDER is not utf8 valid"));
 
     static ref ARGS_JSON: Value =
         serde_json::to_value(std::env::args().collect::<Vec<String>>())
@@ -45,7 +45,7 @@ pub fn emit_metrics(event: Value) -> Result<Option<Process>> {
         "cli_args": *ARGS_JSON,
     }).merge(event);
 
-    let p = Command::new(&[metrics_recorder_path])
+    let p = Command::new_shell(metrics_recorder_path)
         .arg(&serde_json::to_string(&payload)?)
         .show_cmd_on_spawn(log_enabled!(log::Level::Trace))
         .spawn()
