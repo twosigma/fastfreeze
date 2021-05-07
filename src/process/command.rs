@@ -66,7 +66,8 @@ impl Command {
         // We use bash for pipefail support
         let mut inner = StdCommand::new("/bin/bash");
         inner.arg("-o").arg("pipefail")
-             .arg("-c").arg(&script);
+             .arg("-c").arg(&script)
+             .arg("--");
         Self {
             inner,
             display_args: vec![Self::arg_for_display(&script)],

@@ -45,7 +45,7 @@ pub fn emit_metrics(event: Value) -> Result<Option<Process>> {
         "cli_args": *ARGS_JSON,
     }).merge(event);
 
-    let p = Command::new(&[metrics_recorder_path])
+    let p = Command::new_shell(&metrics_recorder_path)
         .arg(&serde_json::to_string(&payload)?)
         .show_cmd_on_spawn(log_enabled!(log::Level::Trace))
         .spawn()

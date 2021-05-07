@@ -53,7 +53,7 @@ pub trait File {
 pub trait FileExt: File {
     /// Write content to the file, truncating it if necessary.
     fn write(&self, log_prefix: &'static str, data: &[u8]) -> Result<()> {
-        let mut p = Command::new_shell(self.upload_shell_cmd())
+        let mut p = Command::new_shell(&self.upload_shell_cmd())
             .stdin(Stdio::piped())
             .enable_stderr_logging(log_prefix)
             .spawn()?;
@@ -77,7 +77,7 @@ pub trait FileExt: File {
 
     /// Reads a file. Returns None if it doesn't exist.
     fn try_read(&self, log_prefix: &'static str) -> Result<Option<Vec<u8>>> {
-        let p = Command::new_shell(self.download_shell_cmd())
+        let p = Command::new_shell(&self.download_shell_cmd())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
