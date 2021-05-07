@@ -25,7 +25,7 @@ ifeq (,$(wildcard $(CARGO)))
 	CARGO := cargo
 endif
 
-SRCS := $(wildcard src/*.rs) Cargo.toml
+SRCS := $(wildcard src/*.rs src/**/*.rs) Cargo.toml
 
 all: fastfreeze.tar.xz
 
