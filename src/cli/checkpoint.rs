@@ -35,7 +35,7 @@ use crate::{
     util::poll_nointr,
     image_streamer::{Stats, ImageStreamer},
     lock::with_checkpoint_restore_lock,
-    signal::kill_process_tree,
+    signal::{kill_process_tree, get_proc_state},
     criu,
     filesystem,
     virt,
@@ -270,19 +270,29 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         // Something went sideways while checkpointing (reading the file system?
         // uploading?). We SIGCONT the application if CRIU had
         // succeeded, this way we leave the application the way we found it.
-        // See the comment above the closure for more details.
         if pgrp.terminate().is_ok() &&
            pgrp.get_mut(criu_ps).wait().map_or(false, |r| r.success()) {
-            info!("Checkpointing failed but CRIU succeeded, resuming application");
+            debug!("Resuming application");
             let _ = kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGCONT);
-        } else {
-            // CRIU failed, but we don't know if the application is stopped or not.
-        }
+        } else { match get_proc_state(Pid::from_raw(APP_ROOT_PID)) {
+            Ok('T') => { // STOPPED
+                // CRIU failed, and the app is still in a STOPPED state.
+                // We don't want to resume the app as it could be corrupted.
+                warn!("The application may be in a bad state. Leaving the application STOPPED");
+                warn!("You may terminate the application");
+            }
+            Ok(_) => {
+                // CRIU failed probably due to failing to write the checkpoint
+                // image. It already resumed the application.
+                debug!("The application was resumed by CRIU");
+            }
+            Err(_) => warn!("The application state is unknown")
+        }}
         e
     })?;
 
     if leave_running {
-        trace!("Resuming application");
+        debug!("Resuming application");
         kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGCONT)
             .context("Failed to resume application")?;
     } else {

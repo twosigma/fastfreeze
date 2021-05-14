@@ -16,7 +16,8 @@ use anyhow::Result;
 use std::{
     error::Error,
     fmt::Display,
-    fs::File, io::ErrorKind,
+    fs::File,
+    io::{BufReader, ErrorKind},
     path::Path,
     result::Result as StdResult,
     sync::atomic::{AtomicBool, Ordering}
@@ -154,4 +155,21 @@ pub fn kill_process_tree(root_pid: Pid, signal: Signal) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn get_proc_state(pid: Pid) -> Result<char> {
+    let status_path = Path::new("/proc").join(pid.to_string()).join("status");
+    let status_file = File::open(status_path)?;
+
+    for line in BufReader::new(status_file).lines() {
+        // lines are of the format "Key:\tValue"
+        // We are looking for the state line "State:  R (running)"
+        if let [key, value] = *line?.split(":\t").collect::<Vec<_>>() {
+            if key == "State" {
+                return Ok(value.chars().next().expect("proc status file corrupted"));
+            }
+        }
+    }
+
+    bail!("Failed to parse proc status file");
 }
