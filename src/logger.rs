@@ -88,6 +88,10 @@ lazy_static! {
     static ref LOGGER: Mutex<Option<Logger>> = Mutex::new(None);
 }
 
+pub fn is_logger_ready() -> bool {
+    LOGGER.lock().unwrap().is_some()
+}
+
 pub fn move_log_file(directory: &Path) -> Result<()> {
     if let Some(logger) = LOGGER.lock().unwrap().as_mut() {
         create_dir_all(directory)?;

@@ -38,6 +38,7 @@ extern crate lazy_static;
 extern crate serde_json;
 
 use anyhow::Result;
+use logger::is_logger_ready;
 use structopt::StructOpt;
 
 use crate::{
@@ -66,7 +67,11 @@ fn main() {
     }
 
     if let Err(e) = do_main() {
-        log::error!("{:#}", e);
+        if is_logger_ready() {
+            error!("{:#}", e);
+        } else {
+            eprintln!("{:#}", e);
+        }
         let exit_code = ExitCode::from_error(&e);
         if exit_code == EXIT_CODE_RESTORE_FAILURE {
             log::error!("You may try again with --no-restore to run the application from scratch");
