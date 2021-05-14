@@ -14,6 +14,7 @@
 
 use anyhow::{Result, Context};
 use std::{
+    borrow::Cow,
     io::Result as IoResult,
     os::unix::io::AsRawFd,
     ffi::{OsString, OsStr},
@@ -45,7 +46,7 @@ pub struct Command {
     inner: StdCommand,
     display_args: Vec<String>,
     show_cmd_on_spawn: bool,
-    stderr_log_prefix: Option<&'static str>,
+    stderr_log_prefix: Option<Cow<'static, str>>,
 }
 
 impl Command {
@@ -114,7 +115,7 @@ impl Command {
         if self.show_cmd_on_spawn {
             debug!("+ {}", display_cmd);
         }
-        Ok(Process::new(inner, display_cmd, self.stderr_log_prefix))
+        Ok(Process::new(inner, display_cmd, self.stderr_log_prefix.clone()))
     }
 
     pub fn exec(&mut self) -> Result<()> {
@@ -126,8 +127,10 @@ impl Command {
     ///    log lines are prefixed with `log_prefix`.
     /// 2) A fixed sized backlog is kept, and included in the error message.
     /// The process' stderr is drained when calling try_wait(), wait(), or drain_stderr_logger().
-    pub fn enable_stderr_logging(&mut self, log_prefix: &'static str) -> &mut Command {
-        self.stderr_log_prefix = Some(log_prefix);
+    pub fn enable_stderr_logging<S>(&mut self, log_prefix: S) -> &mut Command
+            where S: Into<Cow<'static, str>>
+    {
+        self.stderr_log_prefix = Some(log_prefix.into());
         // We'd also like to redirect stdout to stderr in some cases.
         // But I can't find a way to do this in a simple way with the Rust std library.
         self.stderr(Stdio::piped());

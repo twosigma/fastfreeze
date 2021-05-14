@@ -14,6 +14,7 @@
 
 use anyhow::{Result, Error};
 use std::{
+    borrow::Cow,
     os::unix::io::{AsRawFd, RawFd},
     collections::VecDeque,
     io::{BufReader, BufRead, ErrorKind},
@@ -72,7 +73,7 @@ impl StderrReader {
             // programs we run (tar, criu) are well behaved.
             match self.reader.read_line(&mut line) {
                 Err(err) if err.kind() == ErrorKind::WouldBlock => break,
-                Err(err) => bail!(self.format_read_error(anyhow!(err), tail.log_prefix, &line)),
+                Err(err) => bail!(self.format_read_error(anyhow!(err), &tail.log_prefix, &line)),
                 Ok(0) => break, // Reached EOF
                 Ok(_) => tail.log_line(&line),
             }
@@ -94,14 +95,14 @@ impl StderrReader {
 
 #[derive(Clone, Debug)]
 pub struct StderrTail {
-    pub log_prefix: &'static str,
+    pub log_prefix: Cow<'static, str>,
     /// We buffer the last few lines of stderr so that we can emit metrics with the
     /// stderr of the process.
     pub tail: VecDeque<Box<str>>,
 }
 
 impl StderrTail {
-    pub fn new(log_prefix: &'static str) -> Self {
+    pub fn new(log_prefix: Cow<'static, str>) -> Self {
         let tail = VecDeque::with_capacity(STDERR_TAIL_NUM_LINES);
         Self { log_prefix, tail }
     }

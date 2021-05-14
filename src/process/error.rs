@@ -34,7 +34,7 @@ pub struct ProcessError {
 impl ProcessError {
     pub fn to_json(&self) -> Value {
         self.stderr_tail.as_ref().map(|st| json!({
-            st.log_prefix: {
+            st.log_prefix.as_ref(): {
                 "exit_status": self.formatted_exit_status(),
                 "log": &st.tail,
             }

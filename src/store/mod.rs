@@ -17,8 +17,11 @@ mod s3;
 mod gs;
 
 use anyhow::{Result, Context};
-use std::fmt;
-use std::io::Write;
+use std::{
+    borrow::Cow,
+    fmt,
+    io::Write,
+};
 use url::{Url, ParseError};
 use crate::process::{Stdio, Command};
 
@@ -76,7 +79,10 @@ pub trait FileExt: File {
     }
 
     /// Reads a file. Returns None if it doesn't exist.
-    fn try_read(&self, log_prefix: &'static str) -> Result<Option<Vec<u8>>> {
+    fn try_read<S>(&self, log_prefix: S) -> Result<Option<Vec<u8>>>
+        where S: Into<Cow<'static, str>>
+    {
+        let log_prefix = log_prefix.into();
         let p = Command::new_shell(&self.download_shell_cmd())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

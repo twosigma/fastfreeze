@@ -163,10 +163,10 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     img_streamer.process.join(&mut pgrp);
 
     // Spawn the upload processes connected to the image streamer's output
-    for (upload_cmd, shard_pipe) in shard_upload_cmds.into_iter().zip(img_streamer.shard_pipes) {
+    for (i, (upload_cmd, shard_pipe)) in shard_upload_cmds.into_iter().zip(img_streamer.shard_pipes).enumerate() {
         Command::new_shell(&upload_cmd)
             .stdin(Stdio::from(shard_pipe))
-            .enable_stderr_logging("upload shard")
+            .enable_stderr_logging(format!("upload shard {}", i+1))
             .spawn()?
             .join(&mut pgrp);
     }
