@@ -14,6 +14,7 @@
 
 use anyhow::{Result, Context};
 use std::{
+    borrow::Cow,
     os::unix::io::RawFd,
     time::{Duration, Instant},
 };
@@ -49,11 +50,12 @@ pub struct Process {
 }
 
 impl Process {
-    pub fn new(mut inner: Child, display_cmd: String, stderr_log_prefix: Option<&'static str>) -> Self {
-        let stderr_tail = stderr_log_prefix.map(StderrTail::new);
-        let stderr_reader = stderr_log_prefix.map(|_|
+    pub fn new(mut inner: Child, display_cmd: String, stderr_log_prefix: Option<Cow<'static, str>>) -> Self {
+        let stderr_reader = stderr_log_prefix.as_ref().map(|_|
             StderrReader::new(inner.stderr.take().expect("stderr not captured"))
         );
+        let stderr_tail = stderr_log_prefix.map(StderrTail::new);
+
         Self { inner, display_cmd, stderr_reader, stderr_tail }
     }
 
@@ -189,7 +191,7 @@ impl Output {
         ensure_successful_exit_status(self.status, self.display_cmd.clone(), None)
     }
 
-    pub fn ensure_success_with_stderr_log(&self, log_prefix: &'static str) -> Result<()> {
+    pub fn ensure_success_with_stderr_log(&self, log_prefix: Cow<'static, str>) -> Result<()> {
         if self.status.success() {
             Ok(())
         } else {

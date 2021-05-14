@@ -201,10 +201,10 @@ fn restore(
     img_streamer.process.join(&mut pgrp);
 
     // Spawn the download processes connected to the image streamer's input
-    for (download_cmd, shard_pipe) in shard_download_cmds.into_iter().zip(img_streamer.shard_pipes) {
+    for (i, (download_cmd, shard_pipe)) in shard_download_cmds.into_iter().zip(img_streamer.shard_pipes).enumerate() {
         Command::new_shell(&download_cmd)
             .stdout(Stdio::from(shard_pipe))
-            .enable_stderr_logging("download shard")
+            .enable_stderr_logging(format!("download shard {}", i))
             .spawn()?
             .join(&mut pgrp);
     }
