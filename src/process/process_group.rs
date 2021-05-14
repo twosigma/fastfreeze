@@ -36,17 +36,21 @@ pub struct ProcessGroup {
     /// We use a pipe to process SIGCHLD, because at some point we need to select()
     /// on a pipe and watch for children to fail simultaneously.
     sigchld_pipe: fs::File,
-    /// The list of children. When a child terminates, it is taken out from the list.
+    /// The list of children. It is used in append only mode. Children are never
+    /// removed or reordered. This is important for the integrity of `ProcessHandle`.
     children: Vec<ProcessMembership>,
     /// When `ProcessGroup` is dropped, it sends a SIGTERM to the remaining
     /// killable children. After kill_grace_period has elapsed, it sends a SIGKILL.
     kill_grace_period: Duration,
     /// Something to remember for unregistering the sigchld_pipe SIGCHLD.
-    sig_hook_id: signal_hook::SigId,
+    sig_hook_id: Option<signal_hook::SigId>,
 }
 
 pub struct ProcessMembership {
     inner: Process,
+    /// Once a process has exited, we no longer poll its status.
+    /// We keep the process around because of the get_mut() API.
+    exited: bool,
     /// When the process is marked as killable, it means that the process monitor
     /// can kill it on drop(). This is useful to make CRIU immune to kills as it
     /// could leave the application in a bad state.
@@ -56,9 +60,15 @@ pub struct ProcessMembership {
     daemon: bool,
 }
 
+/// `ProcessHandle` represents a specific child. It contains the index of the
+/// child located in the `children` array. The handle is returned by `add()`, and
+/// used in `get_mut()`.
+#[derive(Clone, Copy, Debug)]
+pub struct ProcessHandle(usize);
+
 impl From<Process> for ProcessMembership {
     fn from(inner: Process) -> Self {
-        Self { inner, killable: true, daemon: false }
+        Self { inner, exited: false, killable: true, daemon: false }
     }
 }
 
@@ -78,8 +88,9 @@ impl ProcessGroup {
 
     pub fn with_kill_grace_period(kill_grace_period: Duration) -> Result<Self> {
         let pipe = Pipe::new(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)?;
-        let sig_hook_id = signal_hook::low_level::pipe::register(signal_hook::consts::SIGCHLD, pipe.write)
-            .context("Failed to register signal")?;
+        let sig_hook_id = Some(signal_hook::low_level::pipe::register(
+                                signal_hook::consts::SIGCHLD, pipe.write)
+            .context("Failed to register signal")?);
 
         Ok(Self {
             sigchld_pipe: pipe.read,
@@ -89,13 +100,13 @@ impl ProcessGroup {
         })
     }
 
-    pub fn add(&mut self, proc: impl Into<ProcessMembership>) -> &mut Self {
+    pub fn add(&mut self, proc: impl Into<ProcessMembership>) -> ProcessHandle {
         self.children.push(proc.into());
-        self
+        ProcessHandle(self.children.len() - 1)
     }
 
-    pub fn last_mut(&mut self) -> Option<&mut Process> {
-        self.children.last_mut().map(|membership| &mut membership.inner)
+    pub fn get_mut(&mut self, id: ProcessHandle) -> &mut Process {
+        &mut self.children[id.0].inner
     }
 
     fn drain_sigchld_pipe(&mut self) {
@@ -118,14 +129,12 @@ impl ProcessGroup {
         // When one dies, the other dies too. But we don't know which
         // one died first. So we report both errors.
         let mut errors = Vec::new();
-        let children = std::mem::replace(&mut self.children, Vec::new());
-        for mut child in children {
+        for child in &mut self.children {
             if child.inner.try_wait()?.is_some() { // has child exited ?
+                child.exited = true;
                 if let Err(err) = child.inner.wait_for_success() { // has child errored ?
                     errors.push(err.downcast::<ProcessError>()?);
                 }
-            } else {
-                self.children.push(child);
             }
         }
 
@@ -133,7 +142,7 @@ impl ProcessGroup {
            bail!(ProcessGroupError { errors });
         }
 
-        Ok(self.children.iter().any(|c| !c.daemon))
+        Ok(self.children.iter().any(|c| !c.exited && !c.daemon))
     }
 
     pub fn poll_fds(&self) -> Vec<PollFd> {
@@ -141,8 +150,7 @@ impl ProcessGroup {
         // with the fd of the sigchld. Drainage of stderrs happens in
         // child.inner.try_wait() within try_wait_for_success().
         self.children.iter()
-            .filter_map(|c| c.inner.stderr_logger.as_ref())
-            .map(|sl| sl.stderr_fd)
+            .filter_map(|c| c.inner.stderr_logger_fd())
             .chain(iter::once(self.sigchld_pipe.as_raw_fd()))
             .map(|fd| PollFd::new(fd, PollFlags::POLLIN))
             .collect()
@@ -157,40 +165,42 @@ impl ProcessGroup {
         Ok(())
     }
 
-    fn terminate_killable_gracefully(&mut self) -> Result<()> {
-        let (mut killables, non_killables) = self.children.drain(..)
-            .partition(|c| c.killable);
-
-        self.children = non_killables;
+    pub fn terminate(&mut self) -> Result<()> {
+        // Step 1: SIGTERM all killable children
+        let mut killables = self.children.iter_mut()
+            .filter(|c| c.killable && !c.exited)
+            .collect::<Vec<_>>();
 
         for child in &mut killables {
             if child.inner.try_wait()?.is_none() {
-                // Sending the signal should not fail as our child is not reaped
-                // as try_wait() returned is none.
+                // try_wait() returned none, so the child is not reaped (it is
+                // potentially in a zombie state), and thus kill() should not fail.
                 child.inner.kill(signal::SIGTERM)?;
             }
         }
 
+        // Step 2: SIGKILL all killable children that haven't exited
+        // within the kill_grace_period.
         let deadline = Instant::now() + self.kill_grace_period;
         for child in &mut killables {
             if child.inner.wait_timeout(deadline)?.is_none() {
-                // Child didn't exit in time, it is getting a SIGKILL.
-                // kill() should not failed as our child is not reaped.
+                // kill() should not fail as the child is still not reaped
                 child.inner.kill(signal::SIGKILL)?;
-                child.inner.wait()?;
             }
         }
 
-        Ok(())
-    }
-
-    pub fn terminate(&mut self) -> Result<()> {
-        self.terminate_killable_gracefully()?;
+        // Step 3: wait for all children to exit, including non-killable
+        // children.
         for child in &mut self.children {
             child.inner.wait()?;
+            child.exited = true;
         }
-        ensure!(signal_hook::low_level::unregister(self.sig_hook_id),
-                "signal_hook failed to unregister");
+
+        // Cleanup the SIGCHLD hook.
+        if let Some(sig_hook_id) = self.sig_hook_id.take() {
+            ensure!(signal_hook::low_level::unregister(sig_hook_id),
+                    "signal_hook failed to unregister");
+        }
         Ok(())
     }
 }
@@ -203,20 +213,20 @@ impl Drop for ProcessGroup {
 }
 
 pub trait ProcessExt {
-    fn join(self, pgrp: &mut ProcessGroup);
-    fn join_as_non_killable(self, pgrp: &mut ProcessGroup);
-    fn join_as_daemon(self, pgrp: &mut ProcessGroup);
+    fn join(self, pgrp: &mut ProcessGroup) -> ProcessHandle;
+    fn join_as_non_killable(self, pgrp: &mut ProcessGroup) -> ProcessHandle;
+    fn join_as_daemon(self, pgrp: &mut ProcessGroup) -> ProcessHandle;
 }
 
 impl ProcessExt for Process {
-    fn join(self, pgrp: &mut ProcessGroup) {
-        pgrp.add(self);
+    fn join(self, pgrp: &mut ProcessGroup) -> ProcessHandle {
+        pgrp.add(self)
     }
-    fn join_as_non_killable(self, pgrp: &mut ProcessGroup) {
-        pgrp.add(ProcessMembership::from(self).non_killable());
+    fn join_as_non_killable(self, pgrp: &mut ProcessGroup) -> ProcessHandle {
+        pgrp.add(ProcessMembership::from(self).non_killable())
     }
-    fn join_as_daemon(self, pgrp: &mut ProcessGroup) {
-        pgrp.add(ProcessMembership::from(self).daemon());
+    fn join_as_daemon(self, pgrp: &mut ProcessGroup) -> ProcessHandle {
+        pgrp.add(ProcessMembership::from(self).daemon())
     }
 }
 
@@ -244,18 +254,19 @@ mod test {
 
     #[test]
     fn test_wait_success() -> Result<()> {
-        new_process_group()?
-            .add(Command::new(&["true"]).spawn()?)
-            .add(Command::new(&["sleep"]).arg("0.2").spawn()?)
-            .wait_for_success()
+        let mut pgrp = new_process_group()?;
+        pgrp.add(Command::new(&["true"]).spawn()?);
+        pgrp.add(Command::new(&["sleep"]).arg("0.2").spawn()?);
+        pgrp.wait_for_success()
     }
 
     #[test]
     fn test_exit_fail() -> Result<()> {
-        let err_msg = new_process_group()?
-            .add(Command::new(&["true"]).spawn()?)
-            .add(Command::new(&["sleep"]).arg("1000").spawn()?)
-            .add(Command::new(&["false"]).spawn()?)
+        let mut pgrp = new_process_group()?;
+        pgrp.add(Command::new(&["true"]).spawn()?);
+        pgrp.add(Command::new(&["sleep"]).arg("1000").spawn()?);
+        pgrp.add(Command::new(&["false"]).spawn()?);
+        let err_msg = pgrp
             .wait_for_success()
             .unwrap_err()
             .to_string();
@@ -276,10 +287,11 @@ mod test {
         cmd1.wait()?;
         cmd2.wait()?;
 
-        let err_msg = new_process_group()?
-            .add(cmd1)
-            .add(cmd2)
-            .add(cmd3)
+        let mut pgrp = new_process_group()?;
+        pgrp.add(cmd1);
+        pgrp.add(cmd2);
+        pgrp.add(cmd3);
+        let err_msg = pgrp
             .wait_for_success()
             .unwrap_err()
             .to_string();
@@ -298,8 +310,9 @@ mod test {
         let cmd = Command::new(&["sleep", "1000"]).spawn()?;
         cmd.kill(Signal::SIGTERM)?;
 
-        let err_msg = new_process_group()?
-            .add(cmd)
+        let mut pgrp = new_process_group()?;
+        pgrp.add(cmd);
+        let err_msg = pgrp
             .wait_for_success()
             .unwrap_err()
             .to_string();
@@ -340,6 +353,27 @@ mod test {
 
         println!("elapsed time {}ms", start_time.elapsed().as_millis());
         assert!(start_time.elapsed().as_secs() < 1000);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_mut() -> Result<()> {
+        let mut cmd1 = Command::new(&["bash", "-c", "exit 2"]).spawn()?;
+        let mut cmd2 = Command::new(&["false"]).spawn()?;
+
+        cmd1.wait()?;
+        cmd2.wait()?;
+
+        let mut pgrp = new_process_group()?;
+        let ps1 = pgrp.add(cmd1);
+        let ps2 = pgrp.add(cmd2);
+
+        // processes should still be accessible after terminate()
+        pgrp.terminate()?;
+
+        assert_eq!(pgrp.get_mut(ps1).wait()?.code().unwrap(), 2);
+        assert_eq!(pgrp.get_mut(ps2).wait()?.code().unwrap(), 1);
 
         Ok(())
     }
