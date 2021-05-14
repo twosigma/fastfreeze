@@ -141,6 +141,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         num_shards, passphrase_file.is_some(), cpu_budget.into());
 
     let store = image_url.store();
+    store.prepare(true)?;
     let shard_upload_cmds = shard::upload_cmds(
         &img_manifest, passphrase_file.as_ref(), &*store)?;
 
