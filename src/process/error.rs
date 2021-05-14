@@ -22,22 +22,7 @@ use std::{
 use nix::sys::signal::Signal;
 use serde_json::Value;
 use crate::util::JsonMerge;
-use super::stderr_logger::StderrLogger;
-
-#[derive(Debug)]
-pub struct StderrTail {
-    pub log_prefix: &'static str,
-    pub stderr_tail: Vec<Box<str>>,
-}
-
-impl From<&StderrLogger> for StderrTail {
-    fn from(sl: &StderrLogger) -> Self {
-        Self {
-            log_prefix: sl.log_prefix,
-            stderr_tail: sl.get_stderr_tail(),
-        }
-    }
-}
+use super::stderr_logger::StderrTail;
 
 #[derive(Debug)]
 pub struct ProcessError {
@@ -51,7 +36,7 @@ impl ProcessError {
         self.stderr_tail.as_ref().map(|st| json!({
             st.log_prefix: {
                 "exit_status": self.formatted_exit_status(),
-                "log": &st.stderr_tail,
+                "log": &st.tail,
             }
         })).unwrap_or_else(|| json!({}))
     }

@@ -210,14 +210,14 @@ fn restore(
     }
 
     debug!("Restoring filesystem");
-    filesystem::untar_cmd(img_streamer.tar_fs_pipe.unwrap())
+    let untar_ps = filesystem::untar_cmd(img_streamer.tar_fs_pipe.unwrap())
         .enable_stderr_logging("untar")
         .spawn()?
         .join(&mut pgrp);
     // We want to wait for tar to complete successfully. But if tar errors,
     // we want to report the errors of tar and all other processes involved.
     // The easiest way to use the process group.
-    pgrp.last_mut().unwrap().wait()?; // wait on tar to finish
+    pgrp.get_mut(untar_ps).wait()?; // wait for tar to finish
     pgrp.try_wait_for_success()?; // if tar errored, this is where we exit.
     debug!("Filesystem restored");
 

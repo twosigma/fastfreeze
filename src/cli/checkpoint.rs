@@ -238,11 +238,12 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // Note that CRIU can complete at any time, but it leaves the application in
     // a stopped state, so the filesystem remains consistent.
     debug!("Dumping filesystem");
-    filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
+    let tar_ps = filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
         .enable_stderr_logging("tar")
         .spawn()?
         .join(&mut pgrp);
-    pgrp.last_mut().unwrap().wait()?; // wait for tar to finish
+    pgrp.get_mut(tar_ps).wait()?; // wait for tar to finish
+
     pgrp.try_wait_for_success()?; // if tar errored, this is where we exit
     // We print this debug message so that in the logs, we can have a timestamp
     // to tell us how long it took. Maybe it would be better to have a metric event.

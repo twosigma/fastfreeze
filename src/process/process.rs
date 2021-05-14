@@ -14,6 +14,7 @@
 
 use anyhow::{Result, Context};
 use std::{
+    os::unix::io::RawFd,
     time::{Duration, Instant},
 };
 use nix::{
@@ -32,8 +33,7 @@ pub use std::process::{
 };
 use crate::signal::{check_for_pending_sigterm, retry_on_interrupt};
 use super::{
-    stderr_logger::StderrLogger,
-    error::StderrTail,
+    stderr_logger::{StderrReader, StderrTail},
     ProcessError,
 };
 
@@ -44,15 +44,17 @@ use super::{
 pub struct Process {
     inner: Child,
     display_cmd: String,
-    pub stderr_logger: Option<StderrLogger>,
+    stderr_reader: Option<StderrReader>,
+    stderr_tail: Option<StderrTail>,
 }
 
 impl Process {
     pub fn new(mut inner: Child, display_cmd: String, stderr_log_prefix: Option<&'static str>) -> Self {
-        let stderr_logger = stderr_log_prefix.map(|prefix|
-             StderrLogger::new(prefix, inner.stderr.take().expect("stderr not captured"))
+        let stderr_tail = stderr_log_prefix.map(StderrTail::new);
+        let stderr_reader = stderr_log_prefix.map(|_|
+            StderrReader::new(inner.stderr.take().expect("stderr not captured"))
         );
-        Self { inner, display_cmd, stderr_logger }
+        Self { inner, display_cmd, stderr_reader, stderr_tail }
     }
 
     pub fn pid(&self) -> i32 { self.inner.id() as i32 }
@@ -66,11 +68,23 @@ impl Process {
         check_for_pending_sigterm()?;
         let result = self.inner.try_wait()
             .with_context(|| format!("wait(pid={}) failed", self.pid()));
-        // We drain the stderr after the process may have exited. It ensures we
-        // drain every last bit of it (under the assumption that the process
-        // didn't leak its stderr to another process).
-        self.drain_stderr_logger();
+        self.drain_stderr(false)?;
         result
+    }
+
+    fn drain_stderr(&mut self, finalize: bool) -> Result<()> {
+        if let Some(stderr_reader) = self.stderr_reader.as_mut() {
+            // expect() is fine. We should always have a tail (see in new()).
+            let tail = self.stderr_tail.as_mut().expect("stderr tail is missing");
+            if finalize {
+                stderr_reader.set_blocking(true);
+                stderr_reader.drain(tail)?;
+                self.stderr_reader = None;
+            } else {
+                stderr_reader.drain(tail)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn wait(&mut self) -> Result<ExitStatus> {
@@ -82,7 +96,7 @@ impl Process {
             // XXX We make the assumption that the process doesn't leak its
             // stderr to another process. Otherwise, we could be blocking forever,
             // even though the process has died.
-            self.stderr_logger.as_mut().map(|sl| sl.set_blocking(true).drain());
+            self.drain_stderr(true)?; // true means read_all the stderr and close
             self.inner.wait()
                 .with_context(|| format!("wait(pid={}) failed", self.pid()))
         })
@@ -104,14 +118,19 @@ impl Process {
 
     pub fn wait_for_success(&mut self) -> Result<()> {
         let exit_status = self.wait()?;
+        // We do clones, and that seems inefficient, but that simplifies the error
+        // code compared to having an Rc<>. This code path is not performance critical
         ensure_successful_exit_status(
-            exit_status, self.display_cmd.clone(), self.stderr_logger.as_ref())
+            exit_status,
+            self.display_cmd.clone(),
+            self.stderr_tail.clone(),
+        )
     }
 
     pub fn wait_with_output(self) -> Result<Output> {
-        let Process { display_cmd, inner, stderr_logger } = self;
+        let Process { display_cmd, inner, stderr_reader, stderr_tail: _ } = self;
 
-        assert!(stderr_logger.is_none(),
+        assert!(stderr_reader.is_none(),
                 "stderr logging is not supported when using wait_with_output()");
 
         // FIXME `wait_with_output()` can read from stderr, and stdout and
@@ -129,8 +148,8 @@ impl Process {
         })
     }
 
-    pub fn drain_stderr_logger(&mut self) {
-        self.stderr_logger.as_mut().map(|sl| sl.drain());
+    pub fn stderr_logger_fd(&self) -> Option<RawFd> {
+        self.stderr_reader.as_ref().map(|r| r.fd)
     }
 
     pub fn reap_on_drop(self) -> ProcessDropReaper {
@@ -182,7 +201,7 @@ impl Output {
             bail!(ProcessError {
                 exit_status: self.status,
                 display_cmd: self.display_cmd.clone(),
-                stderr_tail: Some(StderrTail { log_prefix, stderr_tail }),
+                stderr_tail: Some(StderrTail { log_prefix, tail: stderr_tail }),
             });
         }
     }
@@ -191,12 +210,11 @@ impl Output {
 fn ensure_successful_exit_status(
     exit_status: ExitStatus,
     display_cmd: String,
-    stderr_logger: Option<&StderrLogger>
+    stderr_tail: Option<StderrTail>
 ) -> Result<()> {
     if exit_status.success() {
         Ok(())
     } else {
-        let stderr_tail = stderr_logger.map(|sl| sl.into());
         bail!(ProcessError { exit_status, display_cmd, stderr_tail })
     }
 }
