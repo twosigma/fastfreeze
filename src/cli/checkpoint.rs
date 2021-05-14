@@ -268,31 +268,33 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         Ok(stats)
     }().map_err(|e| {
         // Something went sideways while checkpointing (reading the file system?
-        // uploading?). We SIGCONT the application if CRIU had
-        // succeeded, this way we leave the application the way we found it.
+        // uploading the image?).
         if pgrp.terminate().is_ok() &&
            pgrp.get_mut(criu_ps).wait().map_or(false, |r| r.success()) {
-            debug!("Resuming application");
+            // CRIU finished successfully, but checkpointing failed.
+            // We SIGCONT the application to revert our state as we found it.
+            debug!("Resuming application (checkpoint failed, criu ok)");
             let _ = kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGCONT);
         } else { match get_proc_state(Pid::from_raw(APP_ROOT_PID)) {
             Ok('T') => { // STOPPED
-                // CRIU failed, and the app is still in a STOPPED state.
-                // We don't want to resume the app as it could be corrupted.
-                warn!("The application may be in a bad state. Leaving the application STOPPED");
-                warn!("You may terminate the application");
+                // CRIU failed due to an non-anticipated error. It did not resume
+                // the application. We won't resume the app as it could be corrupted.
+                warn!("CRIU may have failed unexpectedly. \
+                       We'll assume the application state is corrupted (e.g., with parasite code)");
+                warn!("The application has been left SIGSTOP'ed. You may SIGKILL or SIGCONT it");
             }
             Ok(_) => {
-                // CRIU failed probably due to failing to write the checkpoint
-                // image. It already resumed the application.
-                debug!("The application was resumed by CRIU");
+                // CRIU failed (most likely while writing the checkpoint image),
+                // recovered, resumed the application, and bailed.
+                debug!("Application resumed (checkpoint failed, criu failed)");
             }
-            Err(_) => warn!("The application state is unknown")
+            Err(_) => warn!("The application state is unavailable, it is probably gone")
         }}
         e
     })?;
 
     if leave_running {
-        debug!("Resuming application");
+        debug!("Resuming application (leave running)");
         kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGCONT)
             .context("Failed to resume application")?;
     } else {
