@@ -177,83 +177,109 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // Spawn the CRIU dump process. CRIU sends the image to the image streamer.
     // CRIU will leave the application in a stopped state when done,
     // so that we can continue tarring the filesystem.
-    // Note: it would be tempting to SIGCONT the application upon failures, but
-    // we should not. It's CRIU's responsability to do so. If it didn't SIGCONT
-    // the app, then something bad has happened, and it would be unsafe to let
-    // the application run in a bad state.
-    criu::criu_dump_cmd()
+    let criu_ps = criu::criu_dump_cmd()
         .enable_stderr_logging("criu")
         .spawn()?
         .join_as_non_killable(&mut pgrp);
 
-    // We want to start dumping the file system ASAP, but we must wait for the
-    // application to be stopped by CRIU, otherwise the filesystem might still
-    // be changing under us. We wait for the "checkpoint-start" message from the
-    // streamer progress pipe.
-    // We must also check for the CRIU process, otherwise, we could hang forever
-    while pgrp.try_wait_for_success()? {
-        let mut poll_fds = pgrp.poll_fds();
-        poll_fds.push(PollFd::new(img_streamer.progress.fd, PollFlags::POLLIN));
-        let timeout = -1;
-        poll_nointr(&mut poll_fds, timeout)?;
+    // From now on, we want to SIGCONT the application if and if only the CRIU
+    // process succeeds. If it failed, it's CRIU's responsability to resume the app.
+    // In the case that CRIU didn't resume the app, it would be unsafe to let
+    // the application run as it might be in an incorrect state (e.g., having
+    // CRIU's parasite still installed).
+    // If the CRIU process succeeded (but the upload streams failed), we still
+    // want to resume the application.
 
-        // Check if we have something to read on the progress pipe.
-        // unwrap() is safe. We had pushed a value in the vector.
-        let streamer_poll_fd = poll_fds.last().expect("missing streamer poll_fd");
-        // unwrap() is safe: we assume the kernel returns valid bits in `revents`.
-        if !streamer_poll_fd.revents().expect("revents invalid").is_empty() {
-            img_streamer.progress.wait_for_checkpoint_start()?;
-            break;
+    // Extract certain fields upfront to avoid compile error due to use of
+    // partial values borrowed in the following closure
+    let inherited_resources = config.inherited_resources;
+    let mut img_streamer_progress = img_streamer.progress;
+    let img_streamer_tar_fs_pipe = img_streamer.tar_fs_pipe;
+
+    let stats = || -> Result<Stats> {
+        // We want to start dumping the file system ASAP, but we must wait for the
+        // application to be stopped by CRIU, otherwise the filesystem might still
+        // be changing under us. We wait for the "checkpoint-start" message from the
+        // streamer progress pipe.
+        // We must also check for the CRIU process, otherwise, we could hang forever
+        while pgrp.try_wait_for_success()? {
+            let mut poll_fds = pgrp.poll_fds();
+            poll_fds.push(PollFd::new(img_streamer_progress.fd, PollFlags::POLLIN));
+            let timeout = -1;
+            poll_nointr(&mut poll_fds, timeout)?;
+
+            // Check if we have something to read on the progress pipe.
+            // unwrap() is safe. We had pushed a value in the vector.
+            let streamer_poll_fd = poll_fds.last().expect("missing streamer poll_fd");
+            // unwrap() is safe: we assume the kernel returns valid bits in `revents`.
+            if !streamer_poll_fd.revents().expect("revents invalid").is_empty() {
+                img_streamer_progress.wait_for_checkpoint_start()?;
+                break;
+            }
         }
-    }
-    debug!("Checkpoint started, application is frozen");
+        debug!("Checkpoint started, application is frozen");
 
-    {
-        // We save the current time of the application so we can resume time
-        // where we left off. The time config file goes on the file system.
-        // We also save the image_url and preserved paths.
-        let app_clock = virt::time::ConfigPath::default().read_current_app_clock()?;
-        ensure!(app_clock >= 0, "Computed app clock is negative: {}ns", app_clock);
-        debug!("App clock: {:.1}s", Duration::from_nanos(app_clock as u64).as_secs_f64());
+        {
+            // We save the current time of the application so we can resume time
+            // where we left off. The time config file goes on the file system.
+            // We also save the image_url and preserved paths.
+            let app_clock = virt::time::ConfigPath::default().read_current_app_clock()?;
+            ensure!(app_clock >= 0, "Computed app clock is negative: {}ns", app_clock);
+            debug!("App clock: {:.1}s", Duration::from_nanos(app_clock as u64).as_secs_f64());
 
-        let config = AppConfig {
-            image_url: image_url.to_string(),
-            preserved_paths: preserved_paths.clone(),
-            passphrase_file,
-            app_clock,
-            // Ideally, we want the clock time once the checkpoint has ended,
-            // but that would be a bit difficult. We could though.
-            // It would involve adding the config.json as an external file
-            // into to the streamer (like fs.tar), and stream it at the very end.
-            // For now, we have the time at which the checkpoint started.
-            created_at: SystemTime::now(),
-            inherited_resources: config.inherited_resources,
-        };
-        config.save()?;
-    }
+            let config = AppConfig {
+                image_url: image_url.to_string(),
+                preserved_paths: preserved_paths.clone(),
+                passphrase_file,
+                app_clock,
+                // Ideally, we want the clock time once the checkpoint has ended,
+                // but that would be a bit difficult. We could though.
+                // It would involve adding the config.json as an external file
+                // into to the streamer (like fs.tar), and stream it at the very end.
+                // For now, we have the time at which the checkpoint started.
+                created_at: SystemTime::now(),
+                inherited_resources,
+            };
+            config.save()?;
+        }
 
-    // We dump the filesystem with tar. The stdout of tar connects to
-    // criu-image-streamer, which incorporates the tarball into the checkpoint
-    // image.
-    // Note that CRIU can complete at any time, but it leaves the application in
-    // a stopped state, so the filesystem remains consistent.
-    debug!("Dumping filesystem");
-    let tar_ps = filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
-        .enable_stderr_logging("tar")
-        .spawn()?
-        .join(&mut pgrp);
-    pgrp.get_mut(tar_ps).wait()?; // wait for tar to finish
+        // We dump the filesystem with tar. The stdout of tar connects to
+        // criu-image-streamer, which incorporates the tarball into the checkpoint
+        // image.
+        // Note that CRIU can complete at any time, but it leaves the application in
+        // a stopped state, so the filesystem remains consistent.
+        debug!("Dumping filesystem");
+        let tar_ps = filesystem::tar_cmd(preserved_paths, img_streamer_tar_fs_pipe.unwrap())
+            .enable_stderr_logging("tar")
+            .spawn()?
+            .join(&mut pgrp);
+        pgrp.get_mut(tar_ps).wait()?; // wait for tar to finish
 
-    pgrp.try_wait_for_success()?; // if tar errored, this is where we exit
-    // We print this debug message so that in the logs, we can have a timestamp
-    // to tell us how long it took. Maybe it would be better to have a metric event.
-    debug!("Filesystem dumped. Finishing dumping processes");
+        pgrp.try_wait_for_success()?; // if tar errored, this is where we exit
+        // We print this debug message so that in the logs, we can have a timestamp
+        // to tell us how long it took. Maybe it would be better to have a metric event.
+        debug!("Filesystem dumped. Finishing dumping processes");
 
-    // Wait for checkpoint to complete
-    pgrp.wait_for_success()?;
+        // Wait for checkpoint to complete
+        pgrp.wait_for_success()?;
 
-    let stats = img_streamer.progress.wait_for_stats()?;
-    stats.show();
+        let stats = img_streamer_progress.wait_for_stats()?;
+        stats.show();
+        Ok(stats)
+    }().map_err(|e| {
+        // Something went sideways while checkpointing (reading the file system?
+        // uploading?). We SIGCONT the application if CRIU had
+        // succeeded, this way we leave the application the way we found it.
+        // See the comment above the closure for more details.
+        if pgrp.terminate().is_ok() &&
+           pgrp.get_mut(criu_ps).wait().map_or(false, |r| r.success()) {
+            info!("Checkpointing failed but CRIU succeeded, resuming application");
+            let _ = kill_process_tree(Pid::from_raw(APP_ROOT_PID), signal::SIGCONT);
+        } else {
+            // CRIU failed, but we don't know if the application is stopped or not.
+        }
+        e
+    })?;
 
     if leave_running {
         trace!("Resuming application");
