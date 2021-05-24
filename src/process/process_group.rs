@@ -336,7 +336,7 @@ mod test {
         drop(pgrp);
 
         println!("elapsed time {}ms", start_time.elapsed().as_millis());
-        assert!(start_time.elapsed().as_millis() > 1000);
+        assert!(start_time.elapsed().as_millis() >= 1000);
 
         Ok(())
     }
