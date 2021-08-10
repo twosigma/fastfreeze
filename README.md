@@ -187,7 +187,7 @@ sudo apt-get install -y curl xz-utils
 cd ~
 
 # This creates a fastfreeze directory in the current directory
-curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.3.0-rc6/fastfreeze-v1.3.0-rc6.tar.xz | tar xJf -
+curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.3.0/fastfreeze-v1.3.0.tar.xz | tar xJf -
 
 # Optionally, you can make a fastfreeze symlink in ~/bin or /usr/local/bin for easy access.
 ln -s $(pwd)/fastfreeze/fastfreeze ~/bin
@@ -213,7 +213,7 @@ RUN apt-get update
 RUN apt-get install -y curl xz-utils
 
 RUN set -ex; \
-  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.3.0-rc6/fastfreeze-v1.3.0-rc6.tar.xz | \
+  curl -SL https://github.com/twosigma/fastfreeze/releases/download/v1.3.0/fastfreeze-v1.3.0.tar.xz | \
     tar xJf - -C /opt; \
   ln -s /opt/fastfreeze/fastfreeze /usr/local/bin; \
   fastfreeze install
