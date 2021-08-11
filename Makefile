@@ -29,8 +29,11 @@ SRCS := $(wildcard src/*.rs src/**/*.rs) Cargo.toml
 
 all: fastfreeze.tar.xz
 
-deps/%:
+.PHONY: $(build_deps)
+build_deps:
 	$(MAKE) -C deps
+
+deps/%: build_deps;
 
 DIST_DIR = dist
 DIST_BIN_DIR = $(DIST_DIR)/bin
