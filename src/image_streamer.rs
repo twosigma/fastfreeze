@@ -97,7 +97,7 @@ impl ImageStreamer {
         })
     }
 
-    pub fn spawn_serve(num_shards: usize) -> Result<Self> {
+    pub fn spawn_serve(num_shards: usize, tcp_listen_remaps: Vec<String>) -> Result<Self> {
         let progress = Pipe::new_output()?;
         let fs_tar = Pipe::new_output()?;
 
@@ -113,6 +113,9 @@ impl ImageStreamer {
                 .map(|o| o.read.as_raw_fd().to_string())
                 .collect::<Vec<_>>().join(","),
         ]);
+        if !tcp_listen_remaps.is_empty() {
+            cmd.arg("--tcp-listen-remap").arg(&tcp_listen_remaps.join(","));
+        }
         cmd
             .arg("--images-dir").arg(&*CRIU_SOCKET_DIR)
             .arg("serve")
