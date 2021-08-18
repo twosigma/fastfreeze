@@ -113,6 +113,13 @@ pub struct Run {
     #[structopt(long="preserve-path", name="path", require_delimiter=true, value_delimiter=":")]
     preserved_paths: Vec<PathBuf>,
 
+    /// Remap the TCP listen socket ports during restore.
+    /// Format is old_port:new_port.
+    /// Multiple tcp port remaps may be passed as a comma separated list.
+    // We use String because we just pass the argument directly to criu-image-streamer.
+    #[structopt(long, require_delimiter = true)]
+    tcp_listen_remap: Vec<String>,
+
     /// Leave application stopped after restore, useful for debugging.
     /// Has no effect when running the app from scratch.
     #[structopt(long)]
@@ -190,6 +197,7 @@ pub fn is_app_running() -> bool {
 fn restore(
     image_url: ImageUrl,
     mut preserved_paths: HashSet<PathBuf>,
+    tcp_listen_remaps: Vec<String>,
     passphrase_file: Option<PathBuf>,
     shard_download_cmds: Vec<String>,
     leave_stopped: bool,
@@ -197,7 +205,7 @@ fn restore(
     info!("Restoring application{}", if leave_stopped { " (leave stopped)" } else { "" });
     let mut pgrp = ProcessGroup::new()?;
 
-    let mut img_streamer = ImageStreamer::spawn_serve(shard_download_cmds.len())?;
+    let mut img_streamer = ImageStreamer::spawn_serve(shard_download_cmds.len(), tcp_listen_remaps)?;
     img_streamer.process.join(&mut pgrp);
 
     // Spawn the download processes connected to the image streamer's input
@@ -444,6 +452,7 @@ fn do_run(
     image_url: ImageUrl,
     app_args: Option<Vec<OsString>>,
     preserved_paths: HashSet<PathBuf>,
+    tcp_listen_remaps: Vec<String>,
     passphrase_file: Option<PathBuf>,
     no_restore: bool,
     allow_bad_image_version: bool,
@@ -482,8 +491,8 @@ fn do_run(
 
             with_metrics("restore", ||
                 restore(
-                    image_url, preserved_paths, passphrase_file,
-                    shard_download_cmds, leave_stopped
+                    image_url, preserved_paths, tcp_listen_remaps,
+                    passphrase_file, shard_download_cmds, leave_stopped
                 ).context(ExitCode(EXIT_CODE_RESTORE_FAILURE)),
                 |(stats, duration_since_checkpoint)|
                     json!({
@@ -538,7 +547,8 @@ impl super::CLI for Run {
             let Self {
                 image_url, app_args, on_app_ready_cmd, no_restore,
                 allow_bad_image_version, passphrase_file, preserved_paths,
-                leave_stopped, verbose: _, app_name, no_container } = self;
+                tcp_listen_remap, leave_stopped, verbose: _, app_name,
+                no_container } = self;
 
             // We allow app_args to be empty. This indicates a restore-only mode.
             let app_args = if app_args.is_empty() {
@@ -589,8 +599,9 @@ impl super::CLI for Run {
             let preserved_paths = preserved_paths.into_iter().collect();
 
             with_checkpoint_restore_lock(|| do_run(
-                image_url, app_args, preserved_paths, passphrase_file,
-                no_restore, allow_bad_image_version, leave_stopped))?;
+                image_url, app_args, preserved_paths, tcp_listen_remap,
+                passphrase_file, no_restore, allow_bad_image_version,
+                leave_stopped))?;
 
             if let Some(on_app_ready_cmd) = on_app_ready_cmd {
                 // Fire and forget.
