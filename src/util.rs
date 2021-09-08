@@ -79,6 +79,17 @@ pub fn readlink_fd(fd: RawFd) -> Result<PathBuf> {
         .with_context(|| format!("Failed to readlink {}", &path))
 }
 
+pub fn readlinkat(dir: &fs::File, path: impl AsRef<Path>) -> Result<PathBuf> {
+    let path = path.as_ref();
+    let dir_fd = dir.as_raw_fd();
+    nix::fcntl::readlinkat(dir_fd, path)
+        .with_context(|| format!("Failed to readlink {}/{}",
+            readlink_fd(dir_fd).map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "?".to_string()),
+            path.display()))
+        .map(|p| p.into())
+}
+
 pub fn is_term(fd: RawFd) -> bool {
     nix::sys::termios::tcgetattr(fd).is_ok()
 }
@@ -128,6 +139,13 @@ pub fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<u64> {
     fs::copy(from.as_ref(), to.as_ref())
         .with_context(|| format!("Failed to copy file {} to {}",
                                  from.as_ref().display(), to.as_ref().display()))
+}
+
+pub fn copy_lib(to: impl AsRef<Path>) -> Result<u64> {
+    let to = to.as_ref();
+    let libname = to.file_name().expect("file name expected");
+    let from = find_lib(libname)?;
+    copy_file(from, to)
 }
 
 pub fn openat(path: &fs::File, filename: impl AsRef<Path>) -> Result<fs::File> {

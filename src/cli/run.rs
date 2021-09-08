@@ -31,7 +31,7 @@ use crate::{
     consts::*,
     store::{ImageUrl, Store},
     virt,
-    cli::{ExitCode, install},
+    cli::ExitCode,
     image::{ManifestFetchResult, ImageManifest, shard, check_passphrase_file_exists},
     process::{Command, CommandPidExt, ProcessExt, ProcessGroup, Stdio,
               spawn_set_ns_last_pid_server, set_ns_last_pid, monitor_child, MIN_PID},
@@ -44,7 +44,7 @@ use crate::{
     container,
     criu,
 };
-use virt::time::Nanos;
+use virt::Nanos;
 
 
 /// Run application.
@@ -134,11 +134,6 @@ pub struct Run {
     /// Note: application specific files are located in /tmp/fastfreeze/<app_name>.
     #[structopt(short="n", long)]
     app_name: Option<String>,
-
-    /// Avoid the use of user, mount, or pid namespaces for running the application.
-    /// This requires to run the install command prior.
-    #[structopt(long)]
-    no_container: bool,
 }
 
 /// `AppConfig` is created during the run command, and updated during checkpoint.
@@ -157,6 +152,8 @@ pub struct AppConfig {
     // we need to remember the pipe inodes that we passed, so that when we restore,
     // we can replace the original external pipes by the new ones.
     pub inherited_resources: criu::InheritableResources,
+    // Virtualization configuration. This needs to be identical across checkpoint/restore.
+    pub virt_config: virt::Config,
 }
 
 impl AppConfig {
@@ -195,6 +192,7 @@ pub fn is_app_running() -> bool {
 // It returns Stats, that's the transfer speeds and all given by criu-image-streamer,
 // and the duration since the checkpoint happened. This is helpful for emitting metrics.
 fn restore(
+    privileges: container::Privileges,
     image_url: ImageUrl,
     mut preserved_paths: HashSet<PathBuf>,
     tcp_listen_remaps: Vec<String>,
@@ -261,15 +259,7 @@ fn restore(
              Current file descriptors: {:#?}",
             previously_inherited_resources.0, current_inherited_resources.0);
 
-        let config = AppConfig {
-            image_url: image_url.to_string(),
-            preserved_paths,
-            passphrase_file,
-            created_at: SystemTime::now(),
-            app_clock: old_config.app_clock,
-            inherited_resources: current_inherited_resources,
-        };
-        config.save()?;
+        virt::ensure_sufficient_privileges_for_restore(&old_config.virt_config, &privileges)?;
 
         // old_config.created contains the date when checkpoint happened.
         // It is a wall clock time coming from another machine.
@@ -290,7 +280,17 @@ fn restore(
         // Rare are the applications that use it.
         debug!("Application clock: {:.1}s",
             Duration::from_nanos(old_config.app_clock as u64).as_secs_f64());
-        virt::time::ConfigPath::default().adjust_timespecs(old_config.app_clock)?;
+        virt::enable_for_restore(&old_config.virt_config, old_config.app_clock)?;
+
+        AppConfig {
+            image_url: image_url.to_string(),
+            preserved_paths,
+            passphrase_file,
+            created_at: SystemTime::now(),
+            app_clock: old_config.app_clock,
+            inherited_resources: current_inherited_resources,
+            virt_config: old_config.virt_config,
+        }.save()?;
 
         (duration_since_checkpoint, previously_inherited_resources)
     };
@@ -346,13 +346,25 @@ fn restore(
 }
 
 fn run_from_scratch(
+    privileges: container::Privileges,
     image_url: ImageUrl,
     preserved_paths: HashSet<PathBuf>,
     passphrase_file: Option<PathBuf>,
     app_cmd: Vec<OsString>,
 ) -> Result<()>
 {
+    ensure!(!app_cmd.is_empty(), "Error: application command must be specified");
+
     let inherited_resources = criu::InheritableResources::current()?;
+
+    // expect() because we already checked that we could get the virtualization
+    // config within privileges.ensure_sufficient_privileges().
+    let virt_config = virt::get_required_virtualization(&privileges)
+        .expect("virtualization logic error");
+    trace!("Virtualization {:#?}", virt_config);
+
+    // The following takes care of the time virtualization setup.
+    virt::enable_for_the_first_time(&virt_config)?;
 
     let config = AppConfig {
         image_url: image_url.to_string(),
@@ -361,13 +373,10 @@ fn run_from_scratch(
         app_clock: 0,
         created_at: SystemTime::now(),
         inherited_resources,
+        virt_config,
     };
     config.save()?;
 
-    virt::time::ConfigPath::default().write_intial()?;
-    virt::enable_system_wide_virtualization()?;
-
-    ensure!(!app_cmd.is_empty(), "Error: application command must be specified");
     let mut cmd = Command::new(app_cmd);
     if let Some(path) = std::env::var_os("FF_APP_PATH") {
         cmd.env_remove("FF_APP_PATH")
@@ -380,6 +389,14 @@ fn run_from_scratch(
 
     cmd.env("FASTFREEZE", "1");
 
+    // We want to give the application a /tmp that we'll include in our image,
+    // but we can't just mount bind it on /tmp. That's because it would be confusing
+    // for users when trying to exchange files from the host to the containered app
+    // via /tmp (for example when using Jupyter notebooks).
+    // Setting TMPDIR to an empty directory in the fastfreeze directory is a
+    // good compromise.
+    cmd.env("TMPDIR", &*CONTAINER_APP_TMP);
+
     // We don't set the application in a process group because we want to be
     // compatible with both of these usages:
     // * "cat | fastfreeze run cat": the first cat must be in the process group
@@ -389,9 +406,11 @@ fn run_from_scratch(
     // We don't want to create a new process group as this would remove any
     // hopes in making both scenarios work well.
 
-    // If we reparent orphans of the application, they will be invisible from CRIU
-    // when it tries to checkpoint the application. That's bad. Instead, we make sure
-    // the application root process reparents the orphans.
+    // When an application process die, its children are normally reparented to
+    // the init process. These children become invisible from CRIU as they are no
+    // longer belonging in the application's process tree. That's bad news.
+    // We set the application root process to be a child subreaper, as opposed to init.
+    // This way we won't loose children.
     cmd.set_child_subreaper();
 
     cmd.spawn_with_pid(APP_ROOT_PID)?;
@@ -410,9 +429,12 @@ pub fn determine_run_mode(store: &dyn Store, allow_bad_image_version: bool) -> R
     let fetch_result = with_metrics("fetch_manifest",
         || ImageManifest::fetch_from_store(store, allow_bad_image_version),
         |fetch_result| match fetch_result {
-            ManifestFetchResult::Some(_)              => json!({"manifest": "good",             "run_mode": "restore"}),
-            ManifestFetchResult::VersionMismatch {..} => json!({"manifest": "version_mismatch", "run_mode": "run_from_scratch"}),
-            ManifestFetchResult::NotFound             => json!({"manifest": "not_found",        "run_mode": "run_from_scratch"}),
+            ManifestFetchResult::Some(_) =>
+                json!({"manifest": "good", "run_mode": "restore"}),
+            ManifestFetchResult::VersionMismatch {..} =>
+                json!({"manifest": "version_mismatch", "run_mode": "run_from_scratch"}),
+            ManifestFetchResult::NotFound =>
+                json!({"manifest": "not_found", "run_mode": "run_from_scratch"}),
         }
     )?;
 
@@ -449,6 +471,7 @@ fn ensure_non_conflicting_pid() -> Result<()> {
 }
 
 fn do_run(
+    privileges: container::Privileges,
     image_url: ImageUrl,
     app_args: Option<Vec<OsString>>,
     preserved_paths: HashSet<PathBuf>,
@@ -491,6 +514,7 @@ fn do_run(
 
             with_metrics("restore", ||
                 restore(
+                    privileges,
                     image_url, preserved_paths, tcp_listen_remaps,
                     passphrase_file, shard_download_cmds, leave_stopped
                 ).context(ExitCode(EXIT_CODE_RESTORE_FAILURE)),
@@ -504,9 +528,9 @@ fn do_run(
         (RunMode::FromScratch, None) =>
             bail!("No application to restore, but running in restore-only mode, aborting"),
         (RunMode::FromScratch, Some(app_args)) => {
-            let app_args = app_args.into_iter().map(|s| s.into()).collect();
+            let app_args = app_args.into_iter().collect();
             with_metrics("run_from_scratch", ||
-                run_from_scratch(image_url, preserved_paths, passphrase_file, app_args),
+                run_from_scratch(privileges, image_url, preserved_paths, passphrase_file, app_args),
                 |_| json!({}))?;
         }
     }
@@ -547,8 +571,7 @@ impl super::CLI for Run {
             let Self {
                 image_url, app_args, on_app_ready_cmd, no_restore,
                 allow_bad_image_version, passphrase_file, preserved_paths,
-                tcp_listen_remap, leave_stopped, verbose: _, app_name,
-                no_container } = self;
+                tcp_listen_remap, leave_stopped, verbose: _, app_name } = self;
 
             // We allow app_args to be empty. This indicates a restore-only mode.
             let app_args = if app_args.is_empty() {
@@ -573,24 +596,34 @@ impl super::CLI for Run {
             };
             let image_url = ImageUrl::parse(&image_url)?;
 
-            let nscaps = container::ns_capabilities()?;
-            // Note: the following may fork a child to enter the new PID namespace,
+            let privileges = container::Privileges::detect()?;
+            trace!("{:#?}", privileges);
+            privileges.ensure_sufficient_privileges()?;
+
+            let app_name = match privileges.ensure_mutiple_apps_support() {
+                Ok(()) => {
+                    Some(app_name
+                        .as_deref()
+                        .unwrap_or_else(|| image_url.image_name()))
+                }
+                Err(e) => {
+                    // We don't have support for named containers.
+                    // Only one application can run at a time.
+                    ensure!(app_name.is_none(), "`--app-name <NAME>` cannot be used as {}", e);
+                    None
+                }
+            };
+
+            // We enter the named container immediately. This is so our
+            // /var/tmp/fastfreeze path points to the
+            // /tmp/fastfreeze/<app_name> directory.  This matters because
+            // we are about to call with_checkpoint_restore_lock()
+            // below, which grabs a lock located in /var/tmp/fastfreeze.
+
+            // Note: the following forks a child to enter the new PID namespace.
             // The parent will be kept running to monitor the child.
             // The execution continues as the child process.
-            use container::NSCapabilities as Cap;
-            match (app_name, no_container, &nscaps, install::is_ff_installed()?) {
-                (Some(_),    true,  _, _    ) => bail!("--app-name and --no-container are mutually exclusive"),
-                (_,          true,  _, false) => bail!("`fastfreeze install` must first be ran"),
-
-                (Some(name), false, Cap::Full, _) => container::create(&name)?,
-                (None,       false, Cap::Full, _) => container::create(image_url.image_name())?,
-                (Some(_),    false, _,         _) => bail!("--app-name cannot be used as PID namespaces are not available"),
-
-                (None,       false, Cap::MountOnly, false) => container::create_without_pid_ns()?,
-                (None,       false, Cap::None,      false) => bail!("`fastfreeze install` must first be ran \
-                                                                    as namespaces are not available"),
-                (None,       _,     _,              true) => {},
-            };
+            container::create(&privileges, app_name)?;
 
             if let Some(ref passphrase_file) = passphrase_file {
                 check_passphrase_file_exists(passphrase_file)?;
@@ -599,6 +632,7 @@ impl super::CLI for Run {
             let preserved_paths = preserved_paths.into_iter().collect();
 
             with_checkpoint_restore_lock(|| do_run(
+                privileges,
                 image_url, app_args, preserved_paths, tcp_listen_remap,
                 passphrase_file, no_restore, allow_bad_image_version,
                 leave_stopped))?;
@@ -632,7 +666,7 @@ impl super::CLI for Run {
                 }),
                 Err(e) => json!({
                     "outcome": "error",
-                    "exit_code": ExitCode::from_error(&e),
+                    "exit_code": ExitCode::from_error(e),
                     "error": format!("{:#}", e),
                 }).merge(metrics_error_json(e))
             }

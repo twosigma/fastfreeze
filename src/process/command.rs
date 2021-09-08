@@ -109,12 +109,20 @@ impl Command {
     }
 
     pub fn spawn(&mut self) -> Result<Process> {
+        // The empty pre_exec() is a workaround to avoid the use of posix_spawn().
+        // The problem with posix_spawn() is that is uses clone(..., CLONE_VM | CLONE_VFORK),
+        // and that returns -EINVAL when using time namespaces. I suspect the
+        // kernel refuses to have two processes sharing the same memory space
+        // (CLONE_VM) in two different time namespace due to VDSO.
+        unsafe { self.pre_exec(|| Ok(())) };
+
         let display_cmd = self.display_args.join(" ");
         let inner = self.inner.spawn()
             .with_context(|| format!("Failed to spawn `{}`", display_cmd))?;
         if self.show_cmd_on_spawn {
             debug!("+ {}", display_cmd);
         }
+
         Ok(Process::new(inner, display_cmd, self.stderr_log_prefix.clone()))
     }
 

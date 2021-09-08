@@ -120,7 +120,7 @@ impl ImageUrl {
                 {
                     let path = url.path();
                     ensure!(url.path_segments().is_some(), "Image URL path is empty");
-                    ensure!(path.chars().last() != Some('/'), "Image URL path should not end with a trailing /");
+                    ensure!(!path.ends_with('/'), "Image URL path should not end with a trailing /");
                 }
 
                 Ok(Self(match url.scheme() {

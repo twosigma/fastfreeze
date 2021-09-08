@@ -12,7 +12,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use nix::{
     sys::signal::{kill, pthread_sigmask, Signal, SigmaskHow, SigSet},
     sys::wait::{wait, WaitStatus},
@@ -36,6 +36,7 @@ impl std::fmt::Display for ChildDied {
         }
     }
 }
+
 
 /// `monitor_child()` monitors a child (good for assuming the init role).
 /// We do the following:
@@ -67,7 +68,7 @@ pub fn monitor_child(pid_child: Pid) -> Result<()> {
     pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&SigSet::all()), None)?;
 
     loop {
-        match wait()? {
+        match wait().with_context(|| format!("Failed to wait for child pid={}", pid_child))? {
             WaitStatus::Exited(pid, 0) if pid == pid_child => {
                 return Ok(());
             }

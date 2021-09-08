@@ -27,6 +27,7 @@ pub mod image_streamer;
 pub mod lock;
 pub mod signal;
 pub mod container;
+pub mod shared_mem;
 
 #[macro_use]
 extern crate anyhow;
@@ -44,7 +45,6 @@ use structopt::StructOpt;
 use crate::{
     consts::*,
     cli::{ExitCode, CLI},
-    virt::disable_local_time_virtualization,
     signal::trap_sigterm_and_friends,
 };
 
@@ -53,7 +53,7 @@ fn main() {
         // We have to be exempt from time virtualization because we use
         // `Instant::now()`, which uses CLOCK_MONOTONIC.
         // disable_local_time_virtualization() does an execve() if needed.
-        disable_local_time_virtualization()?;
+        virt::elf_loader::disable_local_time_virtualization()?;
 
         // START_TIME is used for logging purposes
         lazy_static::initialize(&START_TIME);

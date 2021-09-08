@@ -29,12 +29,74 @@ use libc::timespec;
 use crate::{
     consts::*,
     util::{pwrite_all, get_file_size},
+    container,
 };
 
-// This file contains logic to configure libvirttime. In a nutshell, libvirttime
-// is used to virtualize the CLOCK_MONOTONIC values for the application. The
-// library is configured via an external file that contains all the clock time
-// offsets to be applied.
+// Time virtualization via a time namespace (kernel 5.6+)
+// ======================================================
+
+
+// While CRIU has support for time namespace on its own, we'd rather handle it
+// ourselves. This way we can provide a consistant time semantics between with
+// namespace and without. Namely, we want the application to observe the
+// monotonic starting at 0 when it runs from  scratch.
+pub fn create_time_namespace(app_clock: Nanos) -> Result<()> {
+    let time_offset = app_clock - clock_gettime_monotonic();
+    let time_offset = time_offset.to_timespec();
+
+    // Note: the time namespace takes effect on our forked children, not on the
+    // current process.
+    nix::sched::unshare(container::CLONE_NEWTIME)
+        .context("Failed to create a new time namespace")?;
+
+    // FIXME We don't bother applying a proper boottime clock offset.
+    // We'll revisit this once we use applications that use CLOCK_BOOTTIME.
+    // Most of the time, the values of the CLOCK_MONOTONIC clock is the same as
+    // the CLOCK_BOOTTIME one.
+    // Note that the userspace libvirttime would also need CLOCK_BOOTTIME support
+    // if we wanted to fully support CLOCK_BOOTTIME.
+    let timens_offsets = format!(
+        "monotonic {} {}\n\
+         boottime {} {}\n",
+        time_offset.tv_sec, time_offset.tv_nsec,
+        time_offset.tv_sec, time_offset.tv_nsec);
+
+    fs::write("/proc/self/timens_offsets", timens_offsets)
+        .context("Failed to write to /proc/self/timens_offsets")?;
+
+    Ok(())
+}
+
+pub fn read_current_app_clock_in_its_time_namespace() -> Result<Nanos> {
+    let timens_offsets_path = format!("/proc/{}/timens_offsets", APP_ROOT_PID);
+    let config_offset = || -> Result<Nanos> {
+        for line in fs::read_to_string(&timens_offsets_path)?.lines() {
+            let elems = line.split_whitespace().collect::<Vec<_>>();
+            if let ["monotonic", tv_sec, tv_nsec] = *elems {
+                let tv_sec = tv_sec.parse()?;
+                let tv_nsec = tv_nsec.parse()?;
+                let ts = timespec { tv_sec, tv_nsec };
+                return Ok(Nanos::from_timespec(ts))
+            }
+        }
+        bail!("monotonic offsets line not found");
+    }().with_context(|| format!("Failed to parse {}", timens_offsets_path))?;
+
+    let machine_clock = clock_gettime_monotonic();
+    let app_clock = machine_clock + config_offset;
+    Ok(app_clock)
+}
+
+
+// Time virtualization via libvirttime (userspace tricks)
+// ======================================================
+
+
+// The rest of the file contains logic to configure libvirttime. In a nutshell,
+// libvirttime is used to virtualize the CLOCK_MONOTONIC values for the
+// application in userspace, as opposed to using time namespaces in kernel space.
+// The library is configured via an external file that contains all
+// the clock time offsets to be applied.
 //
 // The config file has the following format:
 //    static struct virt_time_config {
@@ -94,6 +156,7 @@ impl NanosExt for Nanos {
 
         // nsec should always be positive as the libvirttime code assumes nsec is between 0 and
         // NSEC_IN_SEC-1. See https://github.com/twosigma/libvirttime/blob/master/src/util.h#L48
+        // The kernel interface /proc/self/timens_offsets has the same restriction.
         if ts.tv_nsec < 0 {
             ts.tv_sec -= 1;
             ts.tv_nsec += NSEC_IN_SEC as i64;
@@ -128,7 +191,7 @@ fn write_timespec_at(file: &fs::File, nanos: Nanos, fpos: i64) -> Result<()> {
             &ts as *const timespec as *const u8,
             size_of::<timespec>()
         );
-        pwrite_all(file, &buf, fpos)
+        pwrite_all(file, buf, fpos)
             .context("Failed to write to the time config file")?;
         Ok(())
     }

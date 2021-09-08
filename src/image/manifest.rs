@@ -78,7 +78,7 @@ impl ImageManifest {
     }
 
     pub fn persist_to_store(&self, store: &dyn Store) -> Result<()> {
-        store.file(MANIFEST_FILE_NAME).write("upload manifest", &self.to_json().as_bytes())
+        store.file(MANIFEST_FILE_NAME).write("upload manifest", self.to_json().as_bytes())
     }
 
     pub fn fetch_from_store(store: &dyn Store, allow_bad_image_version: bool) -> Result<ManifestFetchResult> {

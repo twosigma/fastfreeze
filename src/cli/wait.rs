@@ -44,7 +44,7 @@ impl super::CLI for Wait {
         let Self { timeout, app_name, verbose: _ } = self;
         let timeout = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t));
 
-        container::maybe_nsenter_app(app_name.as_ref())?;
+        container::enter(app_name.as_deref())?;
 
         let _lock_guard = checkpoint_restore_lock(timeout, false)?;
         Ok(())
