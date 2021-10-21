@@ -1,6 +1,8 @@
 target
 dist
 deps/criu-image-streamer/target
+deps/gcsthin/target
 deps/libvirtcpuid/musl
+tests
 **/*.o
 .git

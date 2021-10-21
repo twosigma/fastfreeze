@@ -28,4 +28,4 @@ unset TMUX
 # S3_CMD                     Command to access AWS S3. Defaults to 'aws s3'
 # GS_CMD                     Command to access Google Storage. Defaults to 'gcsthin'
 
-exec $FF_DIR/bin/fastfreeze "$@"
+exec "$FF_DIR"/bin/fastfreeze "$@"

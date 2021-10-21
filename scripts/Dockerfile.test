@@ -9,7 +9,6 @@ COPY fastfreeze.tar.xz /tmp
 
 RUN set -ex; \
   tar xf /tmp/fastfreeze.tar.xz -C /opt; \
-  ln -s /opt/fastfreeze/fastfreeze /usr/local/bin/; \
-  fastfreeze install
+  ln -s /opt/fastfreeze/fastfreeze /usr/local/bin/
 
 WORKDIR /opt/fastfreeze

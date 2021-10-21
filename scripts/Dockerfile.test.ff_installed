@@ -1,0 +1,2 @@
+FROM fastfreeze-test:latest
+RUN fastfreeze install
