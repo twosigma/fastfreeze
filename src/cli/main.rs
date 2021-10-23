@@ -15,7 +15,11 @@
 use anyhow::Result;
 use structopt::{StructOpt, clap::AppSettings};
 use serde::Serialize;
-use crate::logger;
+use std::sync::atomic::Ordering;
+use crate::{
+    logger,
+    consts::*,
+};
 use super::{
     CLI,
     checkpoint::Checkpoint,
@@ -95,6 +99,7 @@ impl Opts {
     }
 
     pub fn init_logger(&self) -> Result<()> {
+        LOG_VERBOSITY.store(self.verbosity(), Ordering::Relaxed);
         logger::init(self.log_level(), self.log_prefix(), self.use_log_file())
     }
 }

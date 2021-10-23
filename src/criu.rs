@@ -16,6 +16,7 @@ use anyhow::Result;
 use std::{
     collections::{HashSet, HashMap},
     os::unix::io::RawFd,
+    sync::atomic::Ordering,
 };
 use serde::{Serialize, Deserialize};
 use crate::{
@@ -158,8 +159,11 @@ fn add_common_criu_opts(cmd: &mut Command) {
         "--stream",     // Use criu-image-streamer
     ]);
 
-    if log_enabled!(log::Level::Trace) {
-        cmd.arg("-v"); // verbose
+    // VERBOSITY=2 is when we run FastFreeze in log level = trace. Anything on top
+    // of that increases CRIU's verbosity.
+    let criu_verbosity = LOG_VERBOSITY.load(Ordering::Relaxed).saturating_sub(2);
+    if criu_verbosity > 0 {
+        cmd.arg(format!("-{}", "v".repeat(criu_verbosity as usize)));
         cmd.arg("--display-stats");
     }
 

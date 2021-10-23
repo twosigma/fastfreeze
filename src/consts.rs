@@ -15,6 +15,7 @@
 use std::{
     time::Instant,
     path::PathBuf,
+    sync::atomic::AtomicU8,
 };
 use crate::util::{
     gen_random_alphanum_string,
@@ -119,3 +120,4 @@ pub const PAGE_SIZE: usize = 4*KB;
 lazy_static! {
     pub static ref START_TIME: Instant = Instant::now();
 }
+pub static LOG_VERBOSITY: AtomicU8 = AtomicU8::new(0);
