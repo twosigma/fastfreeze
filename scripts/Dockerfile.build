@@ -21,9 +21,18 @@ RUN set -ex; \
 # Build dependencies (CRIU, rust toolchain, libvirtcpuid, etc.)
 COPY deps deps
 # We clean first because we might have a copy of the host compiled binaries
+RUN rm -f deps/.deps-debian-v1 deps/.deps-rustup
+RUN make -C deps clean
+
+ARG BUILD=release
+RUN echo Building for $BUILD
+
+# Install rust, and build CRIU, criu-image-streamer, etc.
 # No -j2 because compiling two rust programs will make the memory usage blow up
-RUN make -C deps clean && make -C deps
+RUN make -C deps BUILD=$BUILD
+
 ENV CARGO=/root/.cargo/bin/cargo
+ARG CARGO_OPTS=--release
 
 # Build FastFreeze Rust dependencies
 # This enables fast image rebuild when making code modification
@@ -33,17 +42,17 @@ RUN set -ex; \
   mkdir src; \
   echo "" > src/lib.rs; \
   echo "fn main() {}" > src/main.rs; \
-  $CARGO test --release; \
-  $CARGO build --release;
+  ${CARGO} test ${CARGO_OPTS}; \
+  ${CARGO} build ${CARGO_OPTS};
 
 # Build FastFreeze
 COPY src src
 RUN touch src/lib.rs src/main.rs
-RUN $CARGO test --release
-RUN $CARGO build --release
+RUN ${CARGO} test ${CARGO_OPTS}
+RUN ${CARGO} build ${CARGO_OPTS}
 
 # Package FastFreeze.
 # Note: We only copy the files we need to get better build caches with docker
 COPY Makefile .
 COPY scripts/fastfreeze scripts/
-RUN make
+RUN make BUILD=$BUILD

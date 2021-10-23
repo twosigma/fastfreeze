@@ -2,13 +2,13 @@
 INTERPOSED_LD_PATH=/var/tmp/fastfreeze/run/ld-linux-x86-64.so.2
 LD_INJECT_ENV_PATH=/var/tmp/fastfreeze/ld-inject.env
 
-RUSTUP_DEP_FILE=.deps-rustup-$(shell hostname)
+RUSTUP_DEP_FILE=.deps-rustup
 $(RUSTUP_DEP_FILE):
 	which rustc || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 	touch $@
 
 # debian/ubuntu dependencies
-DEPS_FILE=.deps-debian-v1-$(shell hostname)
+DEPS_FILE=.deps-debian-v1
 $(DEPS_FILE):
 	[ -e criu/Makefile ] || (git submodule sync && git submodule update --init)
 	sudo apt-get install -y --no-install-recommends \
