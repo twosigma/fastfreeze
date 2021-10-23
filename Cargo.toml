@@ -2,7 +2,7 @@
 name = "fastfreeze"
 version = "1.4.0-rc1"
 authors = ["Nicolas Viennot <Nicolas.Viennot@twosigma.com>"]
-edition = "2018"
+edition = "2021"
 description = "Turn-key solution for checkpoint/restore"
 license = "Apache-2.0"
 

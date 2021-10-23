@@ -201,13 +201,6 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // If the CRIU process succeeded (but the upload streams failed), we still
     // want to resume the application.
 
-    // Extract certain fields upfront to avoid compile error due to use of
-    // partial values borrowed in the following closure
-    let inherited_resources = config.inherited_resources;
-    let virt_config = config.virt_config;
-    let mut img_streamer_progress = img_streamer.progress;
-    let img_streamer_tar_fs_pipe = img_streamer.tar_fs_pipe;
-
     let stats = || -> Result<Stats> {
         // We want to start dumping the file system ASAP, but we must wait for the
         // application to be stopped by CRIU, otherwise the filesystem might still
@@ -216,7 +209,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         // We must also check for the CRIU process, otherwise, we could hang forever
         while pgrp.try_wait_for_success()? {
             let mut poll_fds = pgrp.poll_fds();
-            poll_fds.push(PollFd::new(img_streamer_progress.fd, PollFlags::POLLIN));
+            poll_fds.push(PollFd::new(img_streamer.progress.fd, PollFlags::POLLIN));
             let timeout = -1;
             poll_nointr(&mut poll_fds, timeout)?;
 
@@ -225,7 +218,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
             let streamer_poll_fd = poll_fds.last().expect("missing streamer poll_fd");
             // unwrap() is safe: we assume the kernel returns valid bits in `revents`.
             if !streamer_poll_fd.revents().expect("revents invalid").is_empty() {
-                img_streamer_progress.wait_for_checkpoint_start()?;
+                img_streamer.progress.wait_for_checkpoint_start()?;
                 break;
             }
         }
@@ -235,7 +228,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
             // We save the current time of the application so we can resume time
             // where we left off. The time config file goes on the file system.
             // We also save the image_url and preserved paths.
-            let app_clock = virt::get_current_app_clock(&virt_config)?;
+            let app_clock = virt::get_current_app_clock(&config.virt_config)?;
 
             ensure!(app_clock >= 0, "Computed app clock is negative: {}ns", app_clock);
             debug!("App clock: {:.1}s", Duration::from_nanos(app_clock as u64).as_secs_f64());
@@ -252,8 +245,8 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
                 // it at the very end.  For now, we have the time at which the
                 // checkpoint started.
                 created_at: SystemTime::now(),
-                inherited_resources,
-                virt_config,
+                inherited_resources: config.inherited_resources,
+                virt_config: config.virt_config,
             };
             config.save()?;
         }
@@ -264,7 +257,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         // Note that CRIU can complete at any time, but it leaves the application in
         // a stopped state, so the filesystem remains consistent.
         debug!("Dumping filesystem");
-        let tar_ps = filesystem::tar_cmd(preserved_paths, img_streamer_tar_fs_pipe.unwrap())
+        let tar_ps = filesystem::tar_cmd(preserved_paths, img_streamer.tar_fs_pipe.unwrap())
             .enable_stderr_logging("tar")
             .spawn()?
             .join(&mut pgrp);
@@ -278,7 +271,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         // Wait for checkpoint to complete
         pgrp.wait_for_success()?;
 
-        let stats = img_streamer_progress.wait_for_stats()?;
+        let stats = img_streamer.progress.wait_for_stats()?;
         stats.show();
         Ok(stats)
     }().map_err(|e| {
