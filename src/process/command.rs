@@ -96,6 +96,10 @@ impl Command {
         let pre_exec_fn = || {
             let res = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER) };
             if let Err(e) = nix::errno::Errno::result(res) {
+                // XXX The following is going to use malloc() for a string.
+                // This is dangerous when using threads as an other thread may
+                // have taken a lock on malloc() while fork() happened.
+                // Fortunately, we don't use threads.
                 error!("Failed to set PR_SET_CHILD_SUBREAPER, proceeding anyways: {}", e);
             }
             Ok(())

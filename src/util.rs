@@ -161,14 +161,6 @@ pub fn setns(nsfile: &fs::File, flag: CloneFlags) -> Result<()> {
         .map(drop)
 }
 
-// TODO DELETE
-pub fn cap_ambient_raise(cap: u32) -> Result<()> {
-    let res = unsafe { libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_RAISE, cap, 0, 0) };
-    nix::errno::Errno::result(res)
-        .with_context(|| format!("Failed to raise ambient cap {}", cap))
-        .map(drop)
-}
-
 pub fn find_lib(lib_name: impl AsRef<Path>) -> Result<PathBuf> {
     // We could do a more efficient implementation, but it hurts readability,
     // but we don't do it, because we like readability more.
