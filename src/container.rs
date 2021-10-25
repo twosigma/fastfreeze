@@ -604,7 +604,7 @@ fn prepare_pid_namespace() -> Result<()> {
         write_container_pid_file(container_pid)
             .map_err(|e| { let _ = kill(container_pid, signal::SIGKILL); e })?;
 
-        let result = monitor_child(container_pid);
+        let result = monitor_child(container_pid, true);
         cleanup_current_container();
         container_monitor_exit_process(result);
         // unreachable
@@ -767,7 +767,7 @@ fn enter_inner(name: Option<&str>) -> Result<()> {
     nsenter("ns/mnt")?;
     if nsenter("ns/pid")? {
         if let ForkResult::Parent { child: pid } = fork()? {
-            let result = monitor_child(pid);
+            let result = monitor_child(pid, true);
             container_monitor_exit_process(result);
             // unreachable
         }

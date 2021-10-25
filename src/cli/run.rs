@@ -643,7 +643,7 @@ impl super::CLI for Run {
                     .spawn()?;
             }
 
-            let app_exit_result = monitor_child(Pid::from_raw(APP_ROOT_PID));
+            let app_exit_result = monitor_child(Pid::from_raw(APP_ROOT_PID), false);
             if app_exit_result.is_ok() {
                 info!("Application exited with exit_code=0");
             }

@@ -15,7 +15,7 @@
 use anyhow::{Result, Context};
 use nix::{
     sys::signal::{kill, pthread_sigmask, Signal, SigmaskHow, SigSet},
-    sys::wait::{wait, WaitStatus},
+    sys::wait::{waitpid, WaitStatus},
     unistd::Pid
 };
 use crate::cli::ExitCode;
@@ -38,16 +38,20 @@ impl std::fmt::Display for ChildDied {
 }
 
 
-/// `monitor_child()` monitors a child (good for assuming the init role).
+/// `monitor_child()` monitors a child process.
 /// We do the following:
-/// 1) We proxy signals we receive to our `pid_child`
-/// 2) We reap processes that get reparented to us, although this should not happen for
-///    the application process tree, as we set PR_SET_CHILD_SUBREAPER on the application root process.
-/// 3) When `pid_child` dies, we return an error that contains the appropriate exit_code.
-///    If the child exited normally, we return Ok(()).
+/// 1) We proxy signals we receive to our child.
+/// 2) If `reap_orphans` is set, we reap processes that get reparented to us. This is used when we
+///    assume the role of the init process of a container.
+///    Note that the application root process is set with PR_SET_CHILD_SUBREAPER, and so we should
+///    not see any of its orphans.
+/// 3) When the child, we return an error that contains the appropriate exit_code.
+///    If the child exited with exit_code=0, we return Ok(()).
 /// XXX We don't unregister signals after this function. The caller is expected to exit right after.
-pub fn monitor_child(pid_child: Pid) -> Result<()> {
+pub fn monitor_child(pid_child: Pid, reap_orphans: bool) -> Result<()> {
     use libc::c_int;
+
+    trace!("Monitoring child process pid={}, reap_orphans={}", pid_child, reap_orphans);
 
     for sig in Signal::iterator() {
         // We don't forward SIGCHLD, and neither `FORBIDDEN` signals (e.g.,
@@ -67,24 +71,37 @@ pub fn monitor_child(pid_child: Pid) -> Result<()> {
     }
     pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&SigSet::all()), None)?;
 
+    let wait_pid_arg = if reap_orphans { None } else { Some(pid_child) };
+
     loop {
-        match wait().with_context(|| format!("Failed to wait for child pid={}", pid_child))? {
+        let result = waitpid(wait_pid_arg, None)
+            .with_context(|| format!("Failed to waitpid({:?})", wait_pid_arg))?;
+
+        match result {
             WaitStatus::Exited(pid, 0) if pid == pid_child => {
                 return Ok(());
             }
             WaitStatus::Exited(pid, exit_status) if pid == pid_child => {
-                // When the monitored application dies, the children if any, will get
-                // reparented to us (or whoever is the init process).
-                // That's fine. We are going to exit, and the container will die, killing
-                // all the orphans.
                 return Err(anyhow!(ChildDied::Exited(exit_status as u8))
                     .context(ExitCode(exit_status as u8)));
             }
+
             WaitStatus::Signaled(pid, signal, _core_dumped) if pid == pid_child => {
                 return Err(anyhow!(ChildDied::Signaled(signal))
                     .context(ExitCode(128 + signal as u8)));
             }
-            _ => {},
+
+            // The rest is for debugging
+
+            WaitStatus::Exited(pid, exit_status) => {
+                trace!("Reaped process pid={} exit_status={}", pid, exit_status);
+            }
+
+            WaitStatus::Signaled(pid, signal, _core_dumped) => {
+                trace!("Reaped process pid={} caught fatal signal={}", pid, signal);
+            }
+
+            _ => panic!("waitpid() returned an unexpected value: {:?}", result),
         };
     }
 }
