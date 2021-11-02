@@ -1,13 +1,16 @@
 #!/bin/bash
 set -eu
 
-# Before running this, run:
-# ./build.sh
-# pip3 install pytest
-
 SCRIPT_DIR=$(dirname -- "$(readlink -f -- "$0")")
-cd "$SCRIPT_DIR"/../tests
+cd "$SCRIPT_DIR"/..
 
+# install pytest if needed
+python -c 'import pytest' &> /dev/null || pip3 install pytest
+
+# build docker images if needed
+docker inspect fastfreeze-test-ff-installed &> /dev/null || scripts/build.sh
+
+cd tests
 exec python3 -c '
 import sys
 from pytest import console_main
