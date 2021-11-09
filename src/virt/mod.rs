@@ -19,6 +19,7 @@ use anyhow::Result;
 use std::{
     env,
     collections::HashMap,
+    time::Duration,
 };
 use serde::{Serialize, Deserialize};
 use crate::{
@@ -36,9 +37,10 @@ pub struct Config {
     pub hijack_elf_loader_via_ff_install: bool,
     pub hijack_elf_loader_via_mount_bind: bool,
 
-    /// Whether we do userspace (true) or kernelspace (false) CLOCK_MONOTONIC
-    /// time virtualization.
-    pub use_libvirttime: bool,
+    /// When set, we do userspace time (CLOCK_MONOTONIC) virtualization.
+    /// Otherwise, we are using time namespaces.
+    /// The value when set is the application clock (duration since start).
+    pub libvirttime_app_clock: Option<Nanos>,
 
     /// Whether we need CPUID virtualization (we need it when
     /// FF_APP_VIRT_CPUID_MASK is specified by the user.
@@ -70,11 +72,8 @@ pub struct Config {
 //    More details can be found at https://github.com/twosigma/libvirttime.
 
 fn get_cpuid_mask() -> Option<String> {
-    env::var_os("FF_APP_VIRT_CPUID_MASK")
+    env::var("FF_APP_VIRT_CPUID_MASK").ok()
         .filter(|v| !v.is_empty())
-        .map(|v| v.into_string())
-        .transpose()
-        .expect("FF_APP_VIRT_CPUID_MASK is not UTF8")
 }
 
 fn ff_app_inject_vars() -> HashMap<String, String> {
@@ -84,13 +83,31 @@ fn ff_app_inject_vars() -> HashMap<String, String> {
         .collect()
 }
 
+fn force_libvirttime() -> bool {
+    env::var("FF_APP_VIRT_TIME_IN_USERSPACE").ok()
+        .filter(|v| v == "1")
+        .is_some()
+}
+
+impl Config {
+    pub fn use_libvirttime(&self) -> bool {
+        self.libvirttime_app_clock.is_some()
+    }
+
+    pub fn hijack_elf_loader(&self) -> bool {
+        self.hijack_elf_loader_via_ff_install || self.hijack_elf_loader_via_mount_bind
+    }
+}
+
+
 /// Returns what needs to be virtualized via userspace trickeries.
 /// Returns an error if we cannot do the necessary trickeries given the
 /// current privileges.
-pub fn get_required_virtualization(p: &container::Privileges) -> Result<Config> {
+pub fn get_initial_virt_config(p: &container::Privileges) -> Result<Config> {
     let can_hijack_elf_loader = p.can_mount_bind || p.ff_installed;
 
-    let use_libvirttime = !p.has_time_namespace;
+    let use_libvirttime = !p.has_time_namespace || force_libvirttime();
+    let libvirttime_app_clock = if use_libvirttime { Some(0) } else { None };
 
     let cpuid_mask = get_cpuid_mask();
     let has_cpuid_mask = cpuid_mask.is_some();
@@ -119,10 +136,11 @@ pub fn get_required_virtualization(p: &container::Privileges) -> Result<Config> 
     let hijack_elf_loader_via_ff_install = hijack_elf_loader && p.ff_installed;
     let hijack_elf_loader_via_mount_bind = hijack_elf_loader && !p.ff_installed;
 
+
     Ok(Config {
         hijack_elf_loader_via_ff_install,
         hijack_elf_loader_via_mount_bind,
-        use_libvirttime,
+        libvirttime_app_clock,
         cpuid_mask,
         ff_app_inject_vars,
     })
@@ -134,7 +152,7 @@ pub fn ensure_sufficient_privileges_for_restore(config: &Config, p: &container::
         if config.cpuid_mask.is_some() {
             reasons.push("CPUID is virtualized");
         }
-        if config.use_libvirttime {
+        if config.use_libvirttime() {
             reasons.push("time is virtualized in userspace");
         }
         if !config.ff_app_inject_vars.is_empty() {
@@ -153,42 +171,61 @@ pub fn ensure_sufficient_privileges_for_restore(config: &Config, p: &container::
          This host needs to be identically configured, but we are unable to use `mount --bind`. \
          This is needed because {}", reason_why_elf_loader_is_needed());
 
+    ensure!(config.use_libvirttime() || p.has_time_namespace,
+        "The application was started on a host which had time namespaces (kernel 5.6+). \
+         The current host doesn't and so we can't restore. \
+         To improve compatiblity, use `FF_APP_VIRT_TIME_IN_USERSPACE=1` when starting the application");
+
     Ok(())
 }
 
 /// Enable virtualization for a new application that we are running from scratch
-/// Its monotonic clock is set to 0s.
 pub fn enable_for_the_first_time(config: &Config) -> Result<()> {
-    if config.use_libvirttime {
+    if config.use_libvirttime() {
         time::ConfigPath::default().write_intial()?;
     } else {
-        time::create_time_namespace(0)?;
+        debug!("When restoring, time will be virtualized via a kernel namespace");
     }
 
-    elf_loader::configure_elf_loader(config)?;
-    elf_loader::hijack_elf_loader(config)?;
+    if config.hijack_elf_loader() {
+        elf_loader::configure_elf_loader(config)?;
+        elf_loader::hijack_elf_loader(config)?;
+    }
 
     Ok(())
 }
 
-pub fn enable_for_restore(config: &Config, app_clock: time::Nanos) -> Result<()> {
-    if config.use_libvirttime {
+pub fn enable_for_restore(config: &Config) -> Result<()> {
+    if let Some(app_clock) = config.libvirttime_app_clock {
+        debug!("Application clock: {:.1}s",
+               Duration::from_nanos(app_clock as u64).as_secs_f64());
+
         time::ConfigPath::default().adjust_timespecs(app_clock)?;
     } else {
-        time::create_time_namespace(app_clock)?;
+        debug!("Time is virtualized via a kernel namespace");
     }
 
     // No need to configure the ELF loader, the config has been restored part of
     // the checkpoint image
-    elf_loader::hijack_elf_loader(config)?;
+    if config.hijack_elf_loader() {
+        elf_loader::hijack_elf_loader(config)?;
+    }
 
     Ok(())
 }
 
-pub fn get_current_app_clock(config: &Config) -> Result<time::Nanos> {
-    if config.use_libvirttime {
-        time::ConfigPath::default().read_current_app_clock()
+pub fn prepare_config_for_checkpoint(config: &Config) -> Result<Config> {
+    let libvirttime_app_clock = if config.use_libvirttime() {
+        let app_clock = time::ConfigPath::default().read_current_app_clock()?;
+        ensure!(app_clock >= 0, "Computed app clock is negative: {}ns", app_clock);
+        debug!("Application clock: {:.1}s", Duration::from_nanos(app_clock as u64).as_secs_f64());
+        Some(app_clock)
     } else {
-        time::read_current_app_clock_in_its_time_namespace()
-    }
+        None
+    };
+
+    Ok(Config {
+        libvirttime_app_clock,
+        ..config.clone()
+    })
 }

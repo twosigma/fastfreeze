@@ -107,7 +107,7 @@ impl InheritableResources {
 // CRIU is running under our CPUID virtualization.
 // The CPUID that it detects is virtualized.
 
-pub fn criu_dump_cmd() -> Command {
+pub fn criu_dump_cmd(skip_timens: bool) -> Command {
     let mut cmd = Command::new(&[
         "criu", "dump",
         "--tree", &APP_ROOT_PID.to_string(),
@@ -117,13 +117,14 @@ pub fn criu_dump_cmd() -> Command {
         "--empty-ns", "net", "--tcp-established", "--skip-in-flight", "--tcp-close", "--ext-unix-sk"
     ]);
 
-    add_common_criu_opts(&mut cmd);
+    add_common_criu_opts(&mut cmd, skip_timens);
 
     cmd
 }
 
 pub fn criu_restore_cmd(
     leave_stopped: bool,
+    skip_timens: bool,
     previously_inherited_resources: &InheritableResources,
 ) -> Command {
     let mut cmd = Command::new(&[
@@ -138,7 +139,7 @@ pub fn criu_restore_cmd(
         cmd.arg("--leave-stopped");
     }
 
-    add_common_criu_opts(&mut cmd);
+    add_common_criu_opts(&mut cmd, skip_timens);
 
     previously_inherited_resources
         .add_remaps_criu_opts(&mut cmd);
@@ -146,7 +147,7 @@ pub fn criu_restore_cmd(
     cmd
 }
 
-fn add_common_criu_opts(cmd: &mut Command) {
+fn add_common_criu_opts(cmd: &mut Command, skip_timens: bool) {
     cmd.arg("--images-dir").arg(&*CRIU_SOCKET_DIR);
     cmd.args(&[
         "--cpu-cap",    // Save and check CPUID information in the image
@@ -158,6 +159,10 @@ fn add_common_criu_opts(cmd: &mut Command) {
         "--file-validation", "filesize",
         "--stream",     // Use criu-image-streamer
     ]);
+
+    if skip_timens {
+        cmd.arg("--skip-timens");
+    }
 
     // VERBOSITY=2 is when we run FastFreeze in log level = trace. Anything on top
     // of that increases CRIU's verbosity.

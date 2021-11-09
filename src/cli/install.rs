@@ -73,6 +73,8 @@ pub fn is_ff_installed() -> Result<bool> {
 }
 
 pub fn prepare_ff_dir() -> Result<()> {
+    trace!("Preparing FF dir");
+
     // NO_PRESERVE_FF_DIR includes FF_DIR in its subpath. One stone two birds.
     create_dir_all(&*NO_PRESERVE_FF_DIR)?;
     // We want to give the application a /tmp that we'll include in our image,

@@ -55,6 +55,8 @@ impl Logger {
     }
 
     fn move_file(&mut self, directory: &Path) -> Result<()> {
+        // XXX DO NOT use any functions that could log something because the
+        // caller is holding the LOGGER mutex. It's going to deadlock.
         if let Some((old_file, old_path)) = self.log_file.take() {
             // unwrap() is safe here: we always have a log filename
             let new_path = directory.join(old_path.file_name().unwrap());
@@ -93,8 +95,8 @@ pub fn is_logger_ready() -> bool {
 }
 
 pub fn move_log_file(directory: &Path) -> Result<()> {
+    create_dir_all(directory)?;
     if let Some(logger) = LOGGER.lock().unwrap().as_mut() {
-        create_dir_all(directory)?;
         logger.move_file(directory)?;
     }
     Ok(())

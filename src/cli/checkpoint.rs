@@ -16,7 +16,7 @@ use anyhow::{Result, Context};
 use std::{
     collections::HashSet,
     path::PathBuf,
-    time::{SystemTime, Duration},
+    time::SystemTime,
 };
 use nix::{
     poll::{PollFd, PollFlags},
@@ -178,20 +178,11 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
     // Spawn the CRIU dump process. CRIU sends the image to the image streamer.
     // CRIU will leave the application in a stopped state when done,
     // so that we can continue tarring the filesystem.
-    let criu_ps = {
-        let mut criu_cmd = criu::criu_dump_cmd();
-        criu_cmd.enable_stderr_logging("criu");
-        if !config.virt_config.use_libvirttime {
-            // We are running the application within a time namespace. Put CRIU in
-            // it so that it doesn't try to checkpoint/restore the time namespace.
-            // We don't want to do it for our current FastFreeze process, hence
-            // the pre_exec().  See reasons why in container.rs:enter_inner().
-            let ns_path = format!("/proc/{}/ns/time", APP_ROOT_PID);
-            container::cmd_enter_ns(&mut criu_cmd, &ns_path)?;
-        }
-        criu_cmd.spawn()?
-          .join_as_non_killable(&mut pgrp)
-    };
+    let skip_timens = config.virt_config.use_libvirttime();
+    let criu_ps = criu::criu_dump_cmd(skip_timens)
+        .enable_stderr_logging("criu")
+        .spawn()?
+        .join_as_non_killable(&mut pgrp);
 
     // From now on, we want to SIGCONT the application if and if only the CRIU
     // process succeeds. If it failed, it's CRIU's responsability to resume the app.
@@ -225,19 +216,15 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
         debug!("Checkpoint started, application is frozen");
 
         {
-            // We save the current time of the application so we can resume time
-            // where we left off. The time config file goes on the file system.
-            // We also save the image_url and preserved paths.
-            let app_clock = virt::get_current_app_clock(&config.virt_config)?;
-
-            ensure!(app_clock >= 0, "Computed app clock is negative: {}ns", app_clock);
-            debug!("App clock: {:.1}s", Duration::from_nanos(app_clock as u64).as_secs_f64());
+            // prepare_config_for_checkpoint() gives a virtualization config
+            // with the current application clock. This is what's needed to restore
+            // the application with a proper clock.
+            let virt_config = virt::prepare_config_for_checkpoint(&config.virt_config)?;
 
             let config = AppConfig {
                 image_url: image_url.to_string(),
                 preserved_paths: preserved_paths.clone(),
                 passphrase_file,
-                app_clock,
                 // Ideally, we want the `created_at` field to be the clock time
                 // once the checkpoint has ended, but that would be a bit
                 // difficult. It would involve adding the config.json as an
@@ -246,7 +233,7 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
                 // checkpoint started.
                 created_at: SystemTime::now(),
                 inherited_resources: config.inherited_resources,
-                virt_config: config.virt_config,
+                virt_config,
             };
             config.save()?;
         }
@@ -323,6 +310,8 @@ pub fn do_checkpoint(opts: Checkpoint) -> Result<Stats> {
 
 impl super::CLI for Checkpoint {
     fn run(self) -> Result<()> {
+        // Enter the application container, if needed.
+        // When we run without container, this is a no-op.
         container::enter(self.app_name.as_deref())?;
 
         // Holding the lock while invoking the metrics CLI is preferable to avoid

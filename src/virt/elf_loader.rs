@@ -31,7 +31,7 @@ fn get_virtualization_envvars(config: &virt::Config) -> EnvVars {
     let mut env: EnvVars = EnvVars::new();
     let mut ld_preloads = vec![];
 
-    if config.use_libvirttime {
+    if config.use_libvirttime() {
         ld_preloads.push(LIBVIRTTIME_PATH.clone());
         env.insert("VIRT_TIME_CONF".into(), (&*VIRT_TIME_CONF_PATH).into());
     }
@@ -56,7 +56,7 @@ fn get_virtualization_envvars(config: &virt::Config) -> EnvVars {
     env.insert("LD_PRELOAD".into(), env::join_paths(ld_preloads).unwrap());
 
     // Giving something to look for to ensure_elf_loader_working() 
-    env.insert("FF_ELF_LOADER_ENABLED".into(), "1".into());
+    env.insert("FF_ELF_LOADER".into(), "1".into());
 
     env
 }
@@ -65,6 +65,8 @@ fn get_virtualization_envvars(config: &virt::Config) -> EnvVars {
 /// environment variable for all application on the system.
 pub fn configure_elf_loader(config: &virt::Config) -> Result<()> {
     let env = get_virtualization_envvars(config);
+
+    trace!("Writing ELF loader config: {:#?}", env);
 
     || -> Result<_> {
         // These env variables are forced into any program
@@ -89,9 +91,9 @@ pub fn configure_elf_loader(config: &virt::Config) -> Result<()> {
 fn ensure_elf_loader_working() -> Result<()> {
     // Check if new processes are getting the env variables from
     // get_virtualization_envvars() via the ELF loader.
-    // We fork+execve `env` and see if FF_ELF_LOADER_ENABLED shows up even
+    // We fork+execve `env` and see if FF_ELF_LOADER shows up even
     // though we unset it in our environment.
-    env::remove_var("FF_ELF_LOADER_ENABLED");
+    env::remove_var("FF_ELF_LOADER");
 
     let output = || -> Result<_> {
         Command::new(&["env"])
@@ -103,12 +105,12 @@ fn ensure_elf_loader_working() -> Result<()> {
 
     for line in BufReader::new(Cursor::new(output.stdout)).lines() {
         let line = line.unwrap_or_default();
-        if line.starts_with("FF_ELF_LOADER_ENABLED=") {
+        if line.starts_with("FF_ELF_LOADER=") {
             return Ok(());
         }
     }
 
-    bail!("The ELF loader is not working at injecting env variables");
+    bail!("The ELF loader is not injecting env variables as expected");
 }
 
 pub fn hijack_elf_loader(config: &virt::Config) -> Result<()> {

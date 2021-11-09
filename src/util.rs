@@ -131,11 +131,13 @@ impl Pipe {
 }
 
 pub fn create_dir_all(path: impl AsRef<Path>) -> Result<()> {
+    trace!("Creating dir {}", path.as_ref().display());
     fs::create_dir_all(path.as_ref())
         .with_context(|| format!("Failed to create directory {}", path.as_ref().display()))
 }
 
 pub fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<u64> {
+    trace!("Copying file {} -> {}", from.as_ref().display(), to.as_ref().display());
     fs::copy(from.as_ref(), to.as_ref())
         .with_context(|| format!("Failed to copy file {} to {}",
                                  from.as_ref().display(), to.as_ref().display()))

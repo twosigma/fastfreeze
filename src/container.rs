@@ -43,7 +43,7 @@ use caps::{Capability, CapSet};
 use crate::{
     consts::*,
     cli::{ExitCode, install, run::is_app_running},
-    process::{monitor_child, ChildDied, Command},
+    process::{monitor_child, ChildDied},
     util::{
         create_dir_all, set_tmp_like_permissions, openat,
         setns, readlink_fd, readlinkat, get_inheritable_fds, is_term
@@ -55,52 +55,8 @@ use crate::{
 
 pub const CLONE_NEWTIME: CloneFlags = unsafe { CloneFlags::from_bits_unchecked(0x80) };
 
-/// FastFreeze requires the following to run applications:
-/// 1) Hijack the ELF system loader (/lib/ld-linux.so). This is important to achieve the following:
-///    a) Virtualize CPUID, which needs to happen before libc's ELF loader run.
-///    b) Force time user-space virtualization to all processes by LD_PRELOADing libvirttime.
-///       Even if a program clears the environment, our hijacking loader will set LD_PRELOAD before
-///       any program gets to initialize.
-///
-/// 2) Control PIDs of processes. During restore, we need to have the same PIDs as
-///    during checkpointing.
-///
-/// 3) Optionally, virtualize /dev/pts/N to avoid conflits.
-///
-/// 4) Optionally, gain CAP_SYS_ADMIN (or CAP_CHECKPOINT_RESTORE) so that we can
-///    restore the /proc/self/exe link.
-///
-/// We need a few namespaces to accomplish all this.
-/// a) First, we need a user namespace to be able to create other namespaces. This also
-///    gives us 4).
-/// b) Then we need a mount namespace,  to do 1) and 3).
-/// c) Then we need a PID namespace to do 3).
-///
-/// We distinguish 3 cases of operations:
-/// * NSCapabilities::Full: We have access to all namespaces. Great.
-/// * NSCapabilities::MountOnly: We don't have access to PID namespaces because /proc has
-///   subdirectories that are read-only mounted preventing a remount of /proc. This
-///   is typical within a Kubernetes environment.
-/// * NSCapabilities::None: We can't create any sort of namespaces. That's typical when running
-///   within Docker. In this case, our ELF loader must be installed manually, as root.
-///   This is done with `fastfreeze install`.
-///   Note that we don't want to set any of executables setuid. It makes them secure,
-///   which creates all sorts of problems, such as LD_LIBRARY_PATH not being honored.
-///
-/// Note that only with NSCapabilities::Full can we run multiple applications at
-/// the same time (their PIDs will collide otherwise). This is why only in that case we
-/// mount bind /var/tmp/fastfreeze to /tmp/fastfreeze/app_name.
-///
-/// The way the functionality of this file is the following:
-/// cli/run.rs calls ns_capabilities() to figure out what namespace we have available. It then
-/// figures out what to do.
-/// Under NSCapabilities::Full:
-/// - `create(app_name)` is called to create the namespaces.
-/// - `nsenter(app_name)` is called to enter the namespaces (used during checkpointing).
-/// Under NSCapabilities::MountOnly:
-/// - `create_without_pid_ns()` is called to create the user and mount namespace.
-/// - `nsenter_without_pid_ns()` is called to enter the namespaces.
-/// The `nsenter*()` functions are called from the same entry point, `maybe_nsenter_app()`
+/// The following `Privileges` struct lists what we can and cannot do on the system.
+/// Based on that, FastFreeze decides what namespaces we'll be using.
 
 // Privileges
 //////////////////////////////////
@@ -108,7 +64,7 @@ pub const CLONE_NEWTIME: CloneFlags = unsafe { CloneFlags::from_bits_unchecked(0
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Privileges {
     // Creating a username space is helpful for elevating capabilities in the
-    // local user namespace, and creating time/mount/pid namespaces.
+    // local user namespace, and creating time,mount, and pid namespaces.
     pub has_user_namespace: bool,
 
     // Having CAP_SYS_ADMIN is helpful to restore the /proc/PID/exe symlink
@@ -129,6 +85,8 @@ pub struct Privileges {
     // not to change as it makes the restoring easier as we won't need to remap file
     // paths). Additionally, we can override the ELF loader allowing CPUID
     // virtualization and userspace time virtualization.
+    // AppArmor profiles is what gets in the way:
+    // https://github.com/moby/moby/blob/402d106142e77a092dc761b354fb43d6935aa4f9/profiles/apparmor/template.go#L44
     pub can_mount_bind: bool,
 
     // This is helpful to virtualize the terminal (/dev/pts/0), but not terribly
@@ -156,6 +114,7 @@ pub struct Privileges {
 }
 
 impl Privileges {
+    // Currently, the privilege detection takes less than 3ms
     pub fn detect() -> Result<Self> {
         fn spawn_child_process(child_fn: impl FnOnce()) -> Result<()> {
             match fork()? {
@@ -226,11 +185,12 @@ impl Privileges {
                         p.can_write_to_proc_ns_last_pid = ns_last_pid_file
                             .map(|mut f| f.write_all(b"1")).is_ok();
                     }
-                }).unwrap(); // We panic if the child fail. The parent will catch the error.
+                }).unwrap(); // We panic if the child fails. The parent will detect the error.
             }
         })?;
 
-        // We detect if proc mounting failures are due to read-only for better error messages.
+        // We detect if proc mounting failures are due to read-only submounts
+        // to provide better error messages.
         if p.has_pid_namespace && p.has_mount_namespace && !p.can_mount_proc {
             let content = fs::read_to_string("/proc/self/mounts")
                 .context("Failed to read /proc/self/mounts")?;
@@ -247,7 +207,8 @@ impl Privileges {
             }
         }
 
-        // This tests if a process can ptrace a sibling process
+        // This tests if a process can ptrace a sibling process, which is how
+        // CRIU operates in the way we run CRIU.
         spawn_child_process(|| {
             // We'll try our best to raise CAP_SYS_PTRACE to make ptrace work.
             let _ = unshare(CloneFlags::CLONE_NEWUSER);
@@ -281,7 +242,7 @@ impl Privileges {
 
     pub fn ensure_sufficient_privileges(&self) -> Result<()> {
         // Check that we can enable virtualization immediately
-        virt::get_required_virtualization(self)?;
+        virt::get_initial_virt_config(self)?;
 
         ensure!(self.can_ptrace_siblings,
             "Cannot ptrace siblings processes. CRIU won't be able to checkpoint the application. \
@@ -299,7 +260,7 @@ impl Privileges {
         }
 
         if !self.has_local_cap_sys_admin {
-            warn!("WARN: The /proc/<PID>/exe symlink won't be restored");
+            warn!("WARN: The /proc/<PID>/exe symlinks won't be restored");
         }
 
         Ok(())
@@ -309,6 +270,8 @@ impl Privileges {
     /// FF directory (/tmp/fastfreeze/<app_name>) and 2) create PID namespaces.
     /// This function returns Ok(()) if we have both, or an error explaining what's missing.
     pub fn ensure_mutiple_apps_support(&self) -> Result<()> {
+        ensure!(!self.ff_installed, "FastFreeze is installed and shouldn't be");
+
         ensure!(self.has_user_namespace, "user namespaces are not available");
         ensure!(self.has_pid_namespace, "PID namespaces are not available");
         ensure!(self.has_mount_namespace, "mount namespaces are not available");
@@ -321,12 +284,23 @@ impl Privileges {
     }
 
     pub fn use_mount_namespace(&self) -> bool {
-        // These are only set when self.has_mount_namespace is true
-        self.can_mount_bind || self.can_mount_devpts || self.can_mount_proc
+        // This reduces possible runtime configurations, reducing bugs.
+        // At some point, we might want to be less restrictive and use something like
+        // 'self.can_mount_bind || self.can_mount_devpts || self.can_mount_proc'
+        self.ensure_mutiple_apps_support().is_ok()
     }
 
     pub fn use_pid_namespace(&self) -> bool {
-        self.has_pid_namespace && self.can_mount_proc
+        // This reduces possible runtime configurations, reducing bugs.
+        // At some point, we might want to be less restrictive and use something like
+        // 'self.has_pid_namespace && self.can_mount_proc'
+
+        // We would need more core to support PID namespace without multi-app
+        // supports because with a PID namespace, we need to know the PID of the
+        // application root process, and we write the PID in a file in
+        // /tmp/fastfreeze/<APP_NAME> directory, which we don't really have in
+        // single-app mode.
+        self.ensure_mutiple_apps_support().is_ok()
     }
 }
 
@@ -390,6 +364,7 @@ fn prepare_user_namespace() -> Result<()> {
 pub fn mount_bind(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
     let from = from.as_ref();
     let to = to.as_ref();
+    trace!("Mount bind from={} to={}", from.display(), to.display());
     // It seems that we don't need to mount with MS_PRIVATE.
     mount(Some(from), to, None as Option<&str>, MsFlags::MS_BIND, None as Option<&str>)
         .with_context(|| format!("Failed to bind mount {} to {}", from.display(), to.display()))
@@ -426,6 +401,13 @@ pub fn prepare_fs_namespace(p: &Privileges, container_name: Option<&str>) -> Res
         // if we are given a container name, that means that p.ensure_mutiple_apps_support()
         // returned Ok(()), so we should be able to mount bind.
         mount_bind(&private_ff_dir, &*FF_DIR)?;
+
+        // If FF in installed, that means that the ELF loader is hijacked, and
+        // we'd need more complexity to locate the real system ELF loader, so we
+        // avoid this case.
+        // The assert should always pass as ensure_mutiple_apps_support() checks
+        // that p.ff_installed is false.
+        assert!(!p.ff_installed, "FastFreeze should not be installed when using named containers");
 
         install::prepare_ff_dir()?;
     } else if !p.ff_installed {
@@ -695,7 +677,7 @@ pub fn create(p: &Privileges, container_name: Option<&str>) -> Result<()> {
         .context("Failed to prepare FS namespace")?;
 
     let fds = get_inheritable_fds()?;
-    if p.can_mount_devpts {
+    if p.use_mount_namespace() && p.can_mount_devpts {
         let tty_fds: Vec<_> = fds.iter().cloned().filter(|fd| is_term(*fd)).collect();
         let tty_path = get_tty_path(&tty_fds)?;
         prepare_pty_namespace(tty_path.as_ref())
@@ -773,13 +755,6 @@ fn enter_inner(name: Option<&str>) -> Result<()> {
         }
     }
 
-    // We don't enter the time namespace. It makes things difficult to reason
-    // about. For example, we'd need to adjust the START_TIME variable, and we
-    // would need to be careful when doing app clock computation.
-    // The best would have been to enter the time namespace as a parent just so
-    // our children processes would be affected (e.g., using 'ns/time_for_children'),
-    // but that doesn't work.
-
     Ok(())
 }
 
@@ -806,18 +781,4 @@ pub fn enter(container_name: Option<&str>) -> Result<()> {
             },
         }
     }
-}
-
-pub fn cmd_enter_ns(cmd: &mut Command, ns_path: &str) -> Result<()>
-{
-    let time_ns_file = fs::File::open(&ns_path)
-        .with_context(|| format!("Cannot open {}", &ns_path))?;
-    let set_time_ns = move || {
-        // Panicking is okay. The stderr is captured in our case.
-        setns(&time_ns_file, CloneFlags::empty())
-            .expect("setns() failed");
-        Ok(())
-    };
-    unsafe { cmd.pre_exec(set_time_ns); }
-    Ok(())
 }

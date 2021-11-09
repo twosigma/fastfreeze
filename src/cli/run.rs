@@ -44,7 +44,6 @@ use crate::{
     container,
     criu,
 };
-use virt::Nanos;
 
 
 /// Run application.
@@ -53,18 +52,20 @@ use virt::Nanos;
 #[derive(StructOpt, PartialEq, Debug, Serialize)]
 #[structopt(after_help("\
 ENVS:
-    FF_APP_PATH                 The PATH to use for the application
-    FF_APP_LD_LIBRARY_PATH      The LD_LIBRARY_PATH to use for the application
-    FF_APP_VIRT_CPUID_MASK      The CPUID mask to use. See libvirtcpuid documentation for more details
-    FF_APP_INJECT_<VAR_NAME>    Additional environment variables to inject to the application and its children.
-                                For example, FF_APP_INJECT_LD_PRELOAD=/opt/lib/libx.so
-    FF_METRICS_RECORDER         When specified, FastFreeze invokes the specified program to report metrics.
-                                The metrics are formatted in JSON and passed as first argument
-    FF_FAKE_ROOT                Setting to 1 instructs FastFreeze to use uid=0 when creating user namespaces
-    CRIU_OPTS                   Additional arguments to pass to CRIU, whitespace separated
-    S3_CMD                      Command to access AWS S3. Defaults to 'aws s3'
-    GS_CMD                      Command to access Google Storage. Defaults to 'gcsthin'
-    TAR_CMD                     Command to untar the file system. Defaults to 'tar'
+    FF_APP_PATH                    The PATH to use for the application
+    FF_APP_LD_LIBRARY_PATH         The LD_LIBRARY_PATH to use for the application
+    FF_APP_VIRT_CPUID_MASK         The CPUID mask to use. See libvirtcpuid documentation for more details
+    FF_APP_VIRT_TIME_IN_USERSPACE  When set to 1, kernel time namespaces won't be used
+                                   This is useful to restore on older hosts (kernel 5.5 or lower)
+    FF_APP_INJECT_<VAR_NAME>       Additional environment variables to inject to the application and its children.
+                                   For example, FF_APP_INJECT_LD_PRELOAD=/opt/lib/libx.so
+    FF_METRICS_RECORDER            When specified, FastFreeze invokes the specified program to report metrics.
+                                   The metrics are formatted in JSON and passed as first argument
+    FF_FAKE_ROOT                   Setting to 1 instructs FastFreeze to use uid=0 when creating user namespaces
+    CRIU_OPTS                      Additional arguments to pass to CRIU, whitespace separated
+    S3_CMD                         Command to access AWS S3. Defaults to 'aws s3'
+    GS_CMD                         Command to access Google Storage. Defaults to 'gcsthin'
+    TAR_CMD                        Command to untar the file system. Defaults to 'tar'
 
 EXIT CODES:
     171          A failure happened during restore, or while fetching the image manifest.
@@ -145,7 +146,6 @@ pub struct AppConfig {
     pub image_url: String,
     pub preserved_paths: HashSet<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
-    pub app_clock: Nanos,
     // Used to compute the duration between a restore and a checkpoint, for metrics only.
     pub created_at: SystemTime,
     // When we pass external pipes to the application as stdin/stdout/stderr,
@@ -245,7 +245,7 @@ fn restore(
     // Also, we keep the passphrase_file setting if there's one to ensure that
     // a previously encrypted image remains encrypted. This is normally unecessary, because
     // if the image was in fact encrypted, we would be using a passphrase_file already.
-    let (duration_since_checkpoint, previously_inherited_resources) = {
+    let (duration_since_checkpoint, skip_timens, previously_inherited_resources) = {
         let old_config = AppConfig::restore()?;
         preserved_paths.extend(old_config.preserved_paths);
         let passphrase_file = passphrase_file.or(old_config.passphrase_file);
@@ -259,7 +259,9 @@ fn restore(
              Current file descriptors: {:#?}",
             previously_inherited_resources.0, current_inherited_resources.0);
 
+        trace!("Virtualization {:#?}", &old_config.virt_config);
         virt::ensure_sufficient_privileges_for_restore(&old_config.virt_config, &privileges)?;
+        virt::enable_for_restore(&old_config.virt_config)?;
 
         // old_config.created contains the date when checkpoint happened.
         // It is a wall clock time coming from another machine.
@@ -270,29 +272,18 @@ fn restore(
             .unwrap_or_else(|_| Duration::new(0,0));
         debug!("Duration between restore and checkpoint: {:.1}s", duration_since_checkpoint.as_secs_f64());
 
-        // Adjust the libtimevirt offsets
-        // Note that we do not add the duration_since_checkpoint to the clock.
-        // The man page of clock_gettime(2) says that CLOCK_MONOTONIC "does not
-        // count time that the system is suspended."
-        // The man page says that CLOCK_BOOTTIME is supposed to be the one that
-        // includes the duration when the system was suspended.
-        // For now, we don't worry much about the semantics of CLOCK_BOOTTIME.
-        // Rare are the applications that use it.
-        debug!("Application clock: {:.1}s",
-            Duration::from_nanos(old_config.app_clock as u64).as_secs_f64());
-        virt::enable_for_restore(&old_config.virt_config, old_config.app_clock)?;
+        let skip_timens = old_config.virt_config.use_libvirttime();
 
         AppConfig {
             image_url: image_url.to_string(),
             preserved_paths,
             passphrase_file,
             created_at: SystemTime::now(),
-            app_clock: old_config.app_clock,
             inherited_resources: current_inherited_resources,
             virt_config: old_config.virt_config,
         }.save()?;
 
-        (duration_since_checkpoint, previously_inherited_resources)
+        (duration_since_checkpoint, skip_timens, previously_inherited_resources)
     };
 
     // We start the ns_last_pid daemon here. Note that we join_as_daemon() instead of join(),
@@ -322,7 +313,7 @@ fn restore(
     // Restore application processes.
     // We become the parent of the application as CRIU is configured to use CLONE_PARENT.
     debug!("Restoring processes");
-    criu::criu_restore_cmd(leave_stopped, &previously_inherited_resources)
+    criu::criu_restore_cmd(leave_stopped, skip_timens, &previously_inherited_resources)
         .enable_stderr_logging("criu")
         .spawn()
         .and_then(|ps| {
@@ -359,18 +350,19 @@ fn run_from_scratch(
 
     // expect() because we already checked that we could get the virtualization
     // config within privileges.ensure_sufficient_privileges().
-    let virt_config = virt::get_required_virtualization(&privileges)
+    let virt_config = virt::get_initial_virt_config(&privileges)
         .expect("virtualization logic error");
     trace!("Virtualization {:#?}", virt_config);
 
     // The following takes care of the time virtualization setup.
+    // We don't use CRIU's time virtualization support because we prefer to
+    // provide the application an app clock that starts at 0s.
     virt::enable_for_the_first_time(&virt_config)?;
 
     let config = AppConfig {
         image_url: image_url.to_string(),
         preserved_paths,
         passphrase_file,
-        app_clock: 0,
         created_at: SystemTime::now(),
         inherited_resources,
         virt_config,
@@ -638,9 +630,17 @@ impl super::CLI for Run {
                 leave_stopped))?;
 
             if let Some(on_app_ready_cmd) = on_app_ready_cmd {
-                // Fire and forget.
-                Command::new_shell(&on_app_ready_cmd)
+                let mut p = Command::new_shell(&on_app_ready_cmd)
                     .spawn()?;
+
+                // We use a separate thread to monitor this process.
+                // The monotoring is only used to emit log messages to help the
+                // user troubleshooting when things break.
+                std::thread::spawn(move || {
+                    if let Err(e) = p.wait_for_success() {
+                        error!("--on-app-ready command failed: {}", e);
+                    }
+                });
             }
 
             let app_exit_result = monitor_child(Pid::from_raw(APP_ROOT_PID), false);

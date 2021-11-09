@@ -74,7 +74,7 @@ fn main() {
         }
         let exit_code = ExitCode::from_error(&e);
         if exit_code == EXIT_CODE_RESTORE_FAILURE {
-            log::error!("You may try again with --no-restore to run the application from scratch");
+            log::error!("You may try again with `--no-restore` to run the application from scratch");
         }
         std::process::exit(exit_code as i32);
     }
