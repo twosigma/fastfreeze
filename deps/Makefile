@@ -26,9 +26,11 @@ BUILDS := \
 	build_gcsthin \
 	build_set_ns_last_pid \
 
-.PHONY: $(BUILDS) clean
+.PHONY: $(BUILDS) install_build_dependencies clean
 
-all: $(BUILDS) $(DEPS_FILE) $(RUSTUP_DEP_FILE)
+all: $(BUILDS) install_build_dependencies
+
+install_build_dependencies: $(DEPS_FILE) $(RUSTUP_DEP_FILE);
 
 build_criu: | $(DEPS_FILE)
 	$(MAKE) -C criu criu

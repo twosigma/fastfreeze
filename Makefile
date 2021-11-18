@@ -29,7 +29,7 @@ SRCS := $(wildcard src/*.rs src/**/*.rs) Cargo.toml
 
 all: fastfreeze.tar.xz
 
-.PHONY: $(build_deps)
+.PHONY: $(build_deps) dist_files
 build_deps:
 	$(MAKE) -C deps
 
@@ -135,6 +135,8 @@ extract-libs: $(DIST_ELF_FILES) | $(DIST_LIB_DIR)
 		echo "Patching rpath=$$RPATH of $$file"; \
 		patchelf --set-rpath $$RPATH $$file ;\
 	done
+
+dist_files: $(DIST_FILES);
 
 fastfreeze.tar.xz: $(DIST_FILES) extract-libs Makefile
 	tar --transform 's|^$(DIST_DIR)|fastfreeze|' -cJf $@ $(DIST_DIR)

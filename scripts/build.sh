@@ -6,6 +6,9 @@ set -ex
 SCRIPT_DIR=$(dirname -- "$(readlink -f -- "$0")")
 cd "$SCRIPT_DIR"/..
 
+# Fetch dependencies sources if needed
+[ -e deps/criu/Makefile ] || (git submodule sync && git submodule update --init)
+
 BUILD_ENV=()
 CARGO_OPTS=()
 if [ "$1" == '--debug' ]; then

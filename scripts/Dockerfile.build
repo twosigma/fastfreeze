@@ -18,32 +18,65 @@ RUN set -ex; \
   make -j4; \
   make install -j4
 
-# Build dependencies (CRIU, rust toolchain, libvirtcpuid, etc.)
-COPY deps deps
-# We clean first because we might have a copy of the host compiled binaries
-RUN rm -f deps/.deps-debian-v1 deps/.deps-rustup
-RUN make -C deps clean
-
-ARG BUILD=release
-RUN echo Building for $BUILD
-
-# Install rust, and build CRIU, criu-image-streamer, etc.
-# No -j2 because compiling two rust programs will make the memory usage blow up
-RUN make -C deps BUILD=$BUILD
-
+# Install build dependencies
+COPY deps/Makefile deps/Makefile
+# Next line is just so the install script doesn't fetch the git submodules
+COPY deps/criu/Makefile deps/criu/Makefile
+RUN make -C deps install_build_dependencies
 ENV CARGO=/root/.cargo/bin/cargo
-ARG CARGO_OPTS=--release
 
 # Build FastFreeze Rust dependencies
 # This enables fast image rebuild when making code modification
 COPY Cargo.lock .
 COPY Cargo.toml .
+
 RUN set -ex; \
   mkdir src; \
   echo "" > src/lib.rs; \
-  echo "fn main() {}" > src/main.rs; \
-  ${CARGO} test ${CARGO_OPTS}; \
-  ${CARGO} build ${CARGO_OPTS};
+  echo "fn main() {}" > src/main.rs
+
+# The following updates the creates.io index
+RUN ${CARGO} update --dry-run
+
+# Important to put these *after* the FROM statement, otherwise
+# These don't get set in the environment. We set them last minute
+# to benefit from cache building
+ARG BUILD=release
+ARG CARGO_OPTS=--release
+RUN echo Building for $BUILD
+
+# Then we pre-compile the dependencies with the target build flavor
+RUN ${CARGO} test ${CARGO_OPTS}
+RUN ${CARGO} build ${CARGO_OPTS}
+
+# Compile each dependency one-by-one to leverage the build cache
+# We also clean just in case we copied some built binaries, which should not
+# happen because we have a pretty tight .dockerignore file.
+
+# These can be reordered to make working on a dependency faster
+COPY deps/gcsthin deps/gcsthin
+RUN make -C deps/gcsthin clean
+RUN make -C deps build_gcsthin
+
+COPY deps/set_ns_last_pid deps/set_ns_last_pid
+RUN make -C deps/set_ns_last_pid clean
+RUN make -C deps build_set_ns_last_pid
+
+COPY deps/criu-image-streamer deps/criu-image-streamer
+RUN make -C deps/set_ns_last_pid clean
+RUN make -C deps build_criu_image_streamer
+
+COPY deps/libvirtcpuid deps/libvirtcpuid
+RUN make -C deps/libvirtcpuid clean
+RUN make -C deps build_libvirtcpuid
+
+COPY deps/libvirttime deps/libvirttime
+RUN make -C deps/libvirttime clean
+RUN make -C deps build_libvirttime
+
+COPY deps/criu deps/criu
+RUN make -C deps/criu mrproper
+RUN make -C deps build_criu -j4
 
 # Build FastFreeze
 COPY src src
@@ -55,4 +88,4 @@ RUN ${CARGO} build ${CARGO_OPTS}
 # Note: We only copy the files we need to get better build caches with docker
 COPY Makefile .
 COPY scripts/fastfreeze scripts/
-RUN make BUILD=$BUILD
+RUN make
