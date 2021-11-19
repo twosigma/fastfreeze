@@ -47,12 +47,12 @@ use super::run::AppConfig;
 #[derive(StructOpt, PartialEq, Debug, Serialize)]
 #[structopt(after_help("\
 ENVS:
-    FF_METRICS_RECORDER         When specified, FastFreeze invokes the specified program to report metrics.
-                                The metrics are formatted in JSON and passed as first argument
-    CRIU_OPTS                   Additional arguments to pass to CRIU, whitespace separated
-    S3_CMD                      Command to access AWS S3. Defaults to 'aws s3'
-    GS_CMD                      Command to access Google Storage. Defaults to 'gcsthin'
-    TAR_CMD                     Command to tar the file system. Defaults to 'tar'"
+    FF_METRICS_CMD  When specified, FastFreeze invokes the specified program to report metrics.
+                    The metrics are formatted in JSON and passed as first argument
+    CRIU_OPTS       Additional arguments to pass to CRIU, whitespace separated
+    S3_CMD          Command to access AWS S3. Defaults to 'aws s3'
+    GS_CMD          Command to access Google Storage. Defaults to 'gcsthin'
+    TAR_CMD         Command to tar the file system. Defaults to 'tar'"
 ))]
 pub struct Checkpoint {
     /// Image URL, defaults to the value used during the run command

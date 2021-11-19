@@ -52,14 +52,14 @@ use crate::{
 #[derive(StructOpt, PartialEq, Debug, Serialize)]
 #[structopt(after_help("\
 ENVS:
-    FF_APP_PATH                    The PATH to use for the application
-    FF_APP_LD_LIBRARY_PATH         The LD_LIBRARY_PATH to use for the application
     FF_APP_VIRT_CPUID_MASK         The CPUID mask to use. See libvirtcpuid documentation for more details
     FF_APP_VIRT_TIME_IN_USERSPACE  When set to 1, kernel time namespaces won't be used
-                                   This is useful to restore on older hosts (kernel 5.5 or lower)
+                                   This is useful to restore on older hosts (kernel 5.5 and lower)
+    FF_APP_PATH                    The PATH to use for the application
+    FF_APP_LD_LIBRARY_PATH         The LD_LIBRARY_PATH to use for the application
     FF_APP_INJECT_<VAR_NAME>       Additional environment variables to inject to the application and its children.
                                    For example, FF_APP_INJECT_LD_PRELOAD=/opt/lib/libx.so
-    FF_METRICS_RECORDER            When specified, FastFreeze invokes the specified program to report metrics.
+    FF_METRICS_CMD                 When specified, FastFreeze invokes the specified program to report metrics.
                                    The metrics are formatted in JSON and passed as first argument
     FF_FAKE_ROOT                   Setting to 1 instructs FastFreeze to use uid=0 when creating user namespaces
     CRIU_OPTS                      Additional arguments to pass to CRIU, whitespace separated

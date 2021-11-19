@@ -25,8 +25,9 @@ use crate::{
 use serde_json::Value;
 
 lazy_static! {
-    static ref METRICS_RECORDER_PATH: Option<OsString> =
-        std::env::var_os("FF_METRICS_RECORDER");
+    static ref METRICS_CMD: Option<OsString> =
+        std::env::var_os("FF_METRICS_CMD").or_else(||
+        std::env::var_os("FF_METRICS_RECORDER"));
 
     static ref ARGS_JSON: Value =
         serde_json::to_value(std::env::args().collect::<Vec<String>>())
@@ -34,7 +35,7 @@ lazy_static! {
 }
 
 pub fn emit_metrics(event: Value) -> Result<Option<Process>> {
-    let metrics_recorder_path = match METRICS_RECORDER_PATH.as_ref() {
+    let metrics_cmd = match METRICS_CMD.as_ref() {
         Some(path) => path,
         None => return Ok(None),
     };
@@ -45,7 +46,7 @@ pub fn emit_metrics(event: Value) -> Result<Option<Process>> {
         "cli_args": *ARGS_JSON,
     }).merge(event);
 
-    let p = Command::new(&[metrics_recorder_path])
+    let p = Command::new(&[metrics_cmd])
         .arg(&serde_json::to_string(&payload)?)
         .show_cmd_on_spawn(log_enabled!(log::Level::Trace))
         .spawn()
@@ -58,7 +59,7 @@ pub fn with_metrics_raw<F,M,R>(action: &str, f: F, metrics_f: M) -> Result<R>
     where F: FnOnce() -> Result<R>,
           M: Fn(&Result<R>) -> Value
 {
-    if METRICS_RECORDER_PATH.is_none() {
+    if METRICS_CMD.is_none() {
         return f();
     }
 
