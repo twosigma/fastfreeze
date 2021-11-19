@@ -1,9 +1,7 @@
 import subprocess
 from datetime import datetime 
 import time
-import os
 import sys
-import json
 
 def wait(fn, timeout=10):
     start_time = datetime.now()
@@ -71,3 +69,6 @@ def subprocess_communicate(p, **kwargs):
         stderr = stderr.decode()
         sys.stderr.write(stderr)
     return (stdout, stderr)
+
+def flatten(l):
+    return [item for sublist in l for item in sublist]

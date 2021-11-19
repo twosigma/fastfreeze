@@ -1,22 +1,22 @@
 from util import *
-import pytest
+import json
 
 TEST_DIR="/tmp/ff-test"
 
-@pytest.fixture(scope="module", autouse=True)
-def before_all_tests():
-    set_pid_max(10000)
-    register_app_armor_profile()
+def register_app_armor_profiles():
+    profile = """
+    profile allow_all flags=(attach_disconnected) {
+        capability, network, mount, remount, umount,
+        pivot_root, ptrace, signal, dbus, unix, file,
+    }
 
-@pytest.fixture(autouse=True)
-def before_each_test():
-    cleanup_test_dir()
-    set_yama_ptrace_scope(1)
+    profile deny_mount_bind flags=(attach_disconnected) {
+        capability, network, mount, remount, umount,
+        pivot_root, ptrace, signal, dbus, unix, file,
 
-def register_app_armor_profile():
-    profile = "profile none flags=(attach_disconnected) { \
-        capability, network, mount, remount, umount, \
-        pivot_root, ptrace, signal, dbus, unix, file, }"
+        deny mount,
+    }
+    """
     subprocess_run(["sudo", "apparmor_parser", "--replace"],
         input=profile, encoding='ascii')
 
@@ -75,21 +75,34 @@ def set_yama_ptrace_scope(value):
     cmd = f"echo {value} > /proc/sys/kernel/yama/ptrace_scope"
     subprocess_run(["sudo", "bash", "-c", cmd])
 
-# permissions is to permit all by default, setting something to false will
-# remove the permission.
-# (it's contrary to typical security settings where things need to be
-# whitelisted, but that's because we are not trying to do something secure. We
-# are doing some testing)
+# NOTE: We don't know how to prevent the read-only mounts in /proc when
+# not using --privileged. And the problem of using --privileged is that
+# --security-opt options are ignored.
+# So as soon as we deny something (like time_namespace for example), /proc
+# gets protected against remounts. It's unfortunate because it limits our
+# testing.
 def respawn_docker_container(docker_args=[], docker_image="fastfreeze-test", deny={}):
     if not deny:
         docker_args = docker_args + ["--privileged"]
     else:
-        # We make a clone because we modify it.
+        # We make a clone because we modify `deny` (to detect that there's no unknown keys)
         deny = {**deny}
+
+        if deny.pop("mount_bind", None):
+            app_armor_profile = "deny_mount_bind"
+        else:
+            app_armor_profile = "allow_all"
+
+        if deny.pop("mount_proc", None):
+            # This is a given, I don't know how to turn this off without --privileged
+            pass
+
         profile_path = write_seccomp_profile(deny)
+
+        assert not list(deny.keys()), f"unknown keys: {deny}"
+
         docker_args = docker_args + ["--security-opt", f"seccomp={profile_path}",
-                                     "--security-opt", "apparmor=none"]
-        assert not list(deny.keys())
+                                     "--security-opt", f"apparmor={app_armor_profile}"]
         subprocess_run(["cat", profile_path])
 
     docker_kill_container()
