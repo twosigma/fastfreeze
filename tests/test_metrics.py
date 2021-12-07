@@ -3,9 +3,7 @@ import os
 import json
 
 # TODO test encryption
-# TODO test time userspace and namespace virt
-# TODO test pretty much all the CLI options
-# Why is criu <defunct>
+# TODO test all the CLI options
 
 def test_metrics():
     metrics_cmd = f"{TEST_DIR}/metrics.sh"
@@ -21,8 +19,8 @@ def test_metrics():
             f.write(metrics_script)
         os.chmod(metrics_cmd, 0o777)
 
-    ff_env={"FF_METRICS_CMD": metrics_cmd}
-    template_test(ff_env=ff_env, before_fn=before_fn)
+    env={"FF_METRICS_CMD": metrics_cmd}
+    template_test(env=env, before_fn=before_fn)
 
     with open(metrics_path, 'r') as f:
         metrics = [json.loads(line) for line in f.readlines()]

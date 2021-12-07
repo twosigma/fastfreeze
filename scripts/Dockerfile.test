@@ -1,12 +1,12 @@
 FROM debian:10
 
 RUN apt-get update
-RUN apt-get install -y xz-utils libcap2-bin jq
+RUN apt-get install -y xz-utils build-essential
 
 ARG BUILD=release
 RUN set -ex; \
   if [ "$BUILD" = "debug" ]; then \
-		apt-get install -y strace procps elfutils gdb binutils vim patchelf; \
+		apt-get install -y strace procps elfutils gdb binutils vim patchelf jq; \
 	fi
 
 COPY fastfreeze.tar.xz /tmp
@@ -16,3 +16,6 @@ RUN set -ex; \
   ln -s /opt/fastfreeze/fastfreeze /usr/local/bin/
 
 WORKDIR /opt/fastfreeze
+
+COPY tests/apps test_apps
+RUN make -C test_apps

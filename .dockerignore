@@ -11,6 +11,8 @@ deps/set_ns_last_pid/example_client
 deps/gcsthin/gcsthin
 deps/libvirtcpuid/lcd_mask/features_gen
 tests
+!tests/apps
+tests/apps/bin
 **/build
 **/*.o
 **/*.a

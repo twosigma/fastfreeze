@@ -15,11 +15,11 @@ def before_each_test():
     set_yama_ptrace_scope(1)
 
 def template_test(docker_args=[], docker_image="fastfreeze-test",
-                  deny={}, ff_env={}, ff_args=[], before_fn=None,
+                  deny={}, env={}, ff_args=[], before_fn=None,
                   fails_with=None, **kwargs):
     if fails_with:
         with pytest.raises(subprocess.CalledProcessError) as e:
-            template_test(docker_args, docker_image, deny, ff_env, ff_args,
+            template_test(docker_args, docker_image, deny, env, ff_args,
                           before_fn, stderr=subprocess.PIPE, **kwargs)
         assert fails_with in e.value.stderr
         return
@@ -27,7 +27,7 @@ def template_test(docker_args=[], docker_image="fastfreeze-test",
     if before_fn:
         before_fn()
 
-    ff_docker_args = flatten([["--env", f"{k}={v}"] for (k,v) in ff_env.items()])
+    ff_docker_args = flatten([["--env", f"{k}={v}"] for (k,v) in env.items()])
 
     # 1) run from scratch
     eprint("------- Run from scratch -------", color='1;36')
@@ -56,8 +56,7 @@ def template_test(docker_args=[], docker_image="fastfreeze-test",
     docker_exec(["fastfreeze", "checkpoint", *ff_args, *FF_ARGS_EXTRA],
         docker_args=ff_docker_args, **kwargs)
 
-    if os.path.isfile(f"{TEST_DIR}/run2.ready"):
-        raise RuntimeError("XXX")
+    assert not os.path.isfile(f"{TEST_DIR}/run2.ready")
 
     ff_run_proc.wait()
     # The fastfreeze command should return with an error

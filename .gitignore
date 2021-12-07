@@ -3,3 +3,4 @@ dist/
 *.tar.*
 __pycache__
 .pytest_cache
+tests/apps/bin
