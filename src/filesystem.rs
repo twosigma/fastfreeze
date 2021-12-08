@@ -70,5 +70,17 @@ pub fn untar_cmd(stdin: fs::File) -> Command {
         "--file", "-",
     ])
         .stdin(Stdio::from(stdin));
+
+    // tar writes a list of files on its stdout. We want everything on stderr.
+    let dup_stderr_to_stdout = || {
+        nix::unistd::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO)
+            .map(drop)
+            .map_err(|e| std::io::Error::from_raw_os_error(
+                e.as_errno().map(|e| e as i32).unwrap_or(0)
+            ))
+    };
+    // unsafe: our pre_exec hook does not touch malloc. It's okay.
+    unsafe { cmd.pre_exec(dup_stderr_to_stdout) };
+
     cmd
 }
