@@ -63,7 +63,7 @@ pub const CLONE_NEWTIME: CloneFlags = unsafe { CloneFlags::from_bits_unchecked(0
 
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Privileges {
-    // Creating a username space is helpful for elevating capabilities in the
+    // Creating a user namespace is helpful for elevating capabilities in the
     // local user namespace, and creating time,mount, and pid namespaces.
     pub has_user_namespace: bool,
 
@@ -80,12 +80,12 @@ pub struct Privileges {
     // The mount namespace is important for remounting /proc and doing mount binds.
     pub has_mount_namespace: bool,
 
-    // This is important for and for running multiple application at the same
-    // time (each app see their own /var/tmp/fastfreeze, which we prefer the path
-    // not to change as it makes the restoring easier as we won't need to remap file
+    // This is important for running multiple application at the same time (each
+    // app see their own /var/tmp/fastfreeze, which we prefer the path not to
+    // change as it makes the restoring easier as we won't need to remap file
     // paths). Additionally, we can override the ELF loader allowing CPUID
     // virtualization and userspace time virtualization.
-    // AppArmor profiles is what gets in the way:
+    // AppArmor profiles are what gets in the way:
     // https://github.com/moby/moby/blob/402d106142e77a092dc761b354fb43d6935aa4f9/profiles/apparmor/template.go#L44
     pub can_mount_bind: bool,
 

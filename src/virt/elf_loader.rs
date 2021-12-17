@@ -55,7 +55,7 @@ fn get_virtualization_envvars(config: &virt::Config) -> EnvVars {
     // unwrap is okay here as we cannot possibly have a ":" in one of the ld_preload paths.
     env.insert("LD_PRELOAD".into(), env::join_paths(ld_preloads).unwrap());
 
-    // Giving something to look for to ensure_elf_loader_working() 
+    // Giving something to look for to ensure_elf_loader_working()
     env.insert("FF_ELF_LOADER".into(), "1".into());
 
     env
@@ -127,9 +127,9 @@ pub fn hijack_elf_loader(config: &virt::Config) -> Result<()> {
 
 
 /// This function is called early on to disable the system wide time
-/// virtualization on our process. (we need the real time)
-/// It can call execve(). Note that logging is not setup yet.
-/// This can be taken out once we 
+/// virtualization on our process as we need the non-virt time in time.rs.
+/// XXX This function can call execve(). Note that logging is not setup yet.
+/// This can be taken out once we remove userspace time virtualization.
 pub fn disable_local_time_virtualization() -> Result<()> {
     if env::var_os("VIRT_TIME_CONF").is_some() {
         // We are currently executing with time virtualization enabled. This is

@@ -67,7 +67,7 @@ pub struct Config {
 // 2) libvirtcpuid.so: This library role is to harden the virtualization put in
 //    place by the hijacked ELF loader. It protects the SIGSEGV handler and is
 //    loaded in the application with an LD_PRELOAD directive.
-// 3) libvirttime.so: This virtualizes CLOCK_MONOTONIC for the application. 
+// 3) libvirttime.so: This virtualizes CLOCK_MONOTONIC for the application.
 //    It is loaded via LD_PRELOAD.
 //    More details can be found at https://github.com/twosigma/libvirttime.
 
@@ -127,7 +127,7 @@ pub fn get_initial_virt_config(p: &container::Privileges) -> Result<Config> {
          Use `fastfreeze install` first, or provide mount namespace privileges");
 
     ensure!(can_hijack_elf_loader || !has_ff_app_inject_vars,
-        "Cannot do reliably inject env vars {:?}. \
+        "Cannot reliably inject env vars {:?}. \
          Use `fastfreeze install` first, or provide mount namespace privileges",
         ff_app_inject_vars.iter().map(|(k,v)| format!("FF_APP_INJECT_{}={}", k, v)).collect::<Vec<_>>());
 

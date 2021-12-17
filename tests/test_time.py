@@ -5,7 +5,6 @@ import re
 NANOS_IN_SEC = 1_000_000_000
 
 def parse_time_output(stdout):
-    #return {"dlsym": 0, "regular": 0}
     results = {}
     for line in stdout.decode().splitlines():
         m = re.search("lookup=(.*) tv_sec=(.*) tv_nsec=(.*)", line)

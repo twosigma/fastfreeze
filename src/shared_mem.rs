@@ -25,17 +25,18 @@ pub struct SharedMem<T> {
     addr: ptr::NonNull<T>,
 }
 
-impl<T> SharedMem<T> {
+impl<T: Copy> SharedMem<T> {
     pub fn new(val: T) -> Self {
         unsafe {
-            let addr = mmap(ptr::null_mut(), std::mem::size_of::<T>(),
+            let size = std::mem::size_of::<T>();
+            assert!(size > 0, "SharedMem<T> used with a zero type");
+            let addr = mmap(ptr::null_mut(), size,
                             ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                             MapFlags::MAP_SHARED | MapFlags::MAP_ANONYMOUS,
                             -1, 0,
                             ).expect("mmap() failed") as *mut T;
-            let mut addr = ptr::NonNull::new_unchecked(addr);
-            *addr.as_mut() = val;
-            Self { addr }
+            addr.write(val);
+            Self { addr: ptr::NonNull::new_unchecked(addr) }
         }
     }
 }
