@@ -217,7 +217,7 @@ fn restore(
 
     debug!("Restoring filesystem");
     let untar_ps = filesystem::untar_cmd(img_streamer.tar_fs_pipe.unwrap())
-        .enable_stderr_logging("untar")
+        .enable_stderr_and_stdout_logging("untar") // Important, untar vebose prints on stdout.
         .spawn()?
         .join(&mut pgrp);
     // We want to wait for tar to complete successfully. But if tar errors,

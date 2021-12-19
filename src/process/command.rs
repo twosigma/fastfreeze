@@ -143,9 +143,32 @@ impl Command {
             where S: Into<Cow<'static, str>>
     {
         self.stderr_log_prefix = Some(log_prefix.into());
-        // We'd also like to redirect stdout to stderr in some cases.
-        // But I can't find a way to do this in a simple way with the Rust std library.
         self.stderr(Stdio::piped());
+        self
+    }
+
+    pub fn enable_stderr_and_stdout_logging<S>(&mut self, log_prefix: S) -> &mut Command
+            where S: Into<Cow<'static, str>>
+    {
+        self.enable_stderr_logging(log_prefix);
+        // We'd like to set both stdout and stderr to the same pipe.
+        // but I can't find a way to do this in a simple way with the Rust std library.
+        // So we use dup_stderr_to_stdout().
+        self.dup_stderr_to_stdout();
+        self
+    }
+
+    // See the comment in enable_stderr_and_stdout_logging() for why we want this functionality.
+    pub fn dup_stderr_to_stdout(&mut self) -> &mut Command {
+        let f = || {
+            nix::unistd::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO)
+                .map(drop)
+                .map_err(|e| std::io::Error::from_raw_os_error(
+                    e.as_errno().map(|e| e as i32).unwrap_or(0)
+                ))
+        };
+        // unsafe: our pre_exec hook does not touch malloc. It's okay.
+        unsafe { self.pre_exec(f) };
         self
     }
 }

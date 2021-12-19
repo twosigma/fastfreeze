@@ -58,7 +58,7 @@ pub trait FileExt: File {
     fn write(&self, log_prefix: &'static str, data: &[u8]) -> Result<()> {
         let mut p = Command::new_shell(&self.upload_shell_cmd())
             .stdin(Stdio::piped())
-            .enable_stderr_logging(log_prefix)
+            .enable_stderr_and_stdout_logging(log_prefix)
             .spawn()?;
 
         // We are simultaneously writing to stdin and reading stderr.
