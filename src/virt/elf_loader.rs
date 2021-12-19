@@ -114,17 +114,16 @@ fn ensure_elf_loader_working() -> Result<()> {
 }
 
 pub fn hijack_elf_loader(config: &virt::Config) -> Result<()> {
-    if config.hijack_elf_loader_via_ff_install {
+    if config.hijack_elf_loader_via_ff_install() {
         // no hijacking to do, `ff install` has already been done and symlinked the loader.
         ensure_elf_loader_working()?;
-    } else if config.hijack_elf_loader_via_mount_bind {
+    } else if config.hijack_elf_loader_via_mount_bind() {
         container::mount_bind(&*LD_VIRTCPUID_PATH, &*LD_SYSTEM_PATH)?;
         ensure_elf_loader_working()?;
     }
 
     Ok(())
 }
-
 
 /// This function is called early on to disable the system wide time
 /// virtualization on our process as we need the non-virt time in time.rs.

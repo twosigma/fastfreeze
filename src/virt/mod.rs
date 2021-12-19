@@ -28,14 +28,19 @@ use crate::{
 
 pub use time::Nanos;
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum HijackElfLoaderImpl {
+    MountBind,
+    FastFreezeInstall,
+}
+
 // Note that the virtualization config gets included in the AppConfig JSON.
 // This is so that we can restore a compatible version of the environment.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     /// Whether we need to hijack the system ELF loader, either with a mount
     /// bind, or the symlink via `fastfreeze install`.
-    pub hijack_elf_loader_via_ff_install: bool,
-    pub hijack_elf_loader_via_mount_bind: bool,
+    pub hijack_elf_loader_impl: Option<HijackElfLoaderImpl>,
 
     /// When set, we do userspace time (CLOCK_MONOTONIC) virtualization.
     /// Otherwise, we are using time namespaces.
@@ -95,7 +100,15 @@ impl Config {
     }
 
     pub fn hijack_elf_loader(&self) -> bool {
-        self.hijack_elf_loader_via_ff_install || self.hijack_elf_loader_via_mount_bind
+        self.hijack_elf_loader_impl.is_some()
+    }
+
+    pub fn hijack_elf_loader_via_ff_install(&self) -> bool {
+        self.hijack_elf_loader_impl == Some(HijackElfLoaderImpl::FastFreezeInstall)
+    }
+
+    pub fn hijack_elf_loader_via_mount_bind(&self) -> bool {
+        self.hijack_elf_loader_impl == Some(HijackElfLoaderImpl::MountBind)
     }
 }
 
@@ -133,13 +146,14 @@ pub fn get_initial_virt_config(p: &container::Privileges) -> Result<Config> {
 
     let hijack_elf_loader = has_cpuid_mask || use_libvirttime || has_ff_app_inject_vars;
 
-    let hijack_elf_loader_via_ff_install = hijack_elf_loader && p.ff_installed;
-    let hijack_elf_loader_via_mount_bind = hijack_elf_loader && !p.ff_installed;
-
+    let hijack_elf_loader_impl = match (hijack_elf_loader, p.ff_installed) {
+        (true, true) => Some(HijackElfLoaderImpl::FastFreezeInstall),
+        (true, false) => Some(HijackElfLoaderImpl::MountBind),
+        (false, _) => None,
+    };
 
     Ok(Config {
-        hijack_elf_loader_via_ff_install,
-        hijack_elf_loader_via_mount_bind,
+        hijack_elf_loader_impl,
         libvirttime_app_clock,
         cpuid_mask,
         ff_app_inject_vars,
@@ -161,12 +175,12 @@ pub fn ensure_sufficient_privileges_for_restore(config: &Config, p: &container::
         reasons.join(", ")
     };
 
-    ensure!(!config.hijack_elf_loader_via_ff_install || p.ff_installed,
+    ensure!(!config.hijack_elf_loader_via_ff_install() || p.ff_installed,
         "The application was started on a host where `fastfreeze install` was used. \
          This host needs to be identically configured. \
          This is needed because {}", reason_why_elf_loader_is_needed());
 
-    ensure!(!config.hijack_elf_loader_via_mount_bind || p.can_mount_bind,
+    ensure!(!config.hijack_elf_loader_via_mount_bind() || p.can_mount_bind,
         "The application was started on a host where `mount --bind` was used to hijack the ELF loader. \
          This host needs to be identically configured, but we are unable to use `mount --bind`. \
          This is needed because {}", reason_why_elf_loader_is_needed());

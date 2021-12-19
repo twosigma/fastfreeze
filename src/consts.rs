@@ -26,7 +26,7 @@ use crate::util::{
 
 /// The image version must be bumped when libvirttime or libvirtcpuid change,
 /// or when the `ImageManifest` format changes.
-pub const CURRENT_IMG_VERSION: &str = "2021-11-17";
+pub const CURRENT_IMG_VERSION: &str = "2021-12-19";
 
 // We compute the paths at runtime. It improves readability compared to using
 // macros at compile time.
