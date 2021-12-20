@@ -217,7 +217,8 @@ fn restore(
 
     debug!("Restoring filesystem");
     let untar_ps = filesystem::untar_cmd(img_streamer.tar_fs_pipe.unwrap())
-        .enable_stderr_and_stdout_logging("untar") // Important, untar vebose prints on stdout.
+        // Logging stdout is important, untar prints verbose messages on stdout.
+        .enable_stderr_and_stdout_logging("untar")
         .spawn()?
         .join(&mut pgrp);
     // We want to wait for tar to complete successfully. But if tar errors,
@@ -337,7 +338,7 @@ fn restore(
 }
 
 fn run_from_scratch(
-    privileges: container::Privileges,
+    virt_config: virt::Config,
     image_url: ImageUrl,
     preserved_paths: HashSet<PathBuf>,
     passphrase_file: Option<PathBuf>,
@@ -348,10 +349,6 @@ fn run_from_scratch(
 
     let inherited_resources = criu::InheritableResources::current()?;
 
-    // expect() because we already checked that we could get the virtualization
-    // config within privileges.ensure_sufficient_privileges().
-    let virt_config = virt::get_initial_virt_config(&privileges)
-        .expect("virtualization logic error");
     trace!("Virtualization {:#?}", virt_config);
 
     // The following takes care of the time virtualization setup.
@@ -464,6 +461,7 @@ fn ensure_non_conflicting_pid() -> Result<()> {
 
 fn do_run(
     privileges: container::Privileges,
+    virt_initial_run_config: virt::Config,
     image_url: ImageUrl,
     app_args: Option<Vec<OsString>>,
     preserved_paths: HashSet<PathBuf>,
@@ -522,7 +520,8 @@ fn do_run(
         (RunMode::FromScratch, Some(app_args)) => {
             let app_args = app_args.into_iter().collect();
             with_metrics("run_from_scratch", ||
-                run_from_scratch(privileges, image_url, preserved_paths, passphrase_file, app_args),
+                run_from_scratch(virt_initial_run_config, image_url,
+                                 preserved_paths, passphrase_file, app_args),
                 |_| json!({}))?;
         }
     }
@@ -590,7 +589,16 @@ impl super::CLI for Run {
 
             let privileges = container::Privileges::detect()?;
             trace!("{:#?}", privileges);
-            privileges.ensure_sufficient_privileges()?;
+
+            // At some point, we'll need to setup virtualization. If we run the app from scratch,
+            // we must use virt::get_initial_virt_config(). If we restore the app, we must use
+            // virt::ensure_sufficient_privileges_for_restore(). It turns out that if
+            // the latter fails, the former would necessarily fail. This is because restoring
+            // needs a specific virtualization configuration among all possible ones. Running
+            // from scratch picks one among all possible ones.
+            // We run virt::get_initial_virt_config() immediately so that we fail before fetching
+            // the image manifest to make the user experience a little better by failing faster.
+            let virt_initial_run_config = virt::get_initial_virt_config(&privileges)?;
 
             let app_name = match privileges.ensure_mutiple_apps_support() {
                 Ok(()) => {
@@ -605,6 +613,11 @@ impl super::CLI for Run {
                     None
                 }
             };
+
+            // We call ensure_sufficient_privileges() last because it mostly print warnings.
+            // This ordering is preferrable as most fatal errors possibilities have passed.
+            // The user is not getting useless warnings if fatal errors are detectable early on.
+            privileges.ensure_sufficient_privileges()?;
 
             // We enter the named container immediately. This is so our
             // /var/tmp/fastfreeze path points to the
@@ -624,7 +637,7 @@ impl super::CLI for Run {
             let preserved_paths = preserved_paths.into_iter().collect();
 
             with_checkpoint_restore_lock(|| do_run(
-                privileges,
+                privileges, virt_initial_run_config,
                 image_url, app_args, preserved_paths, tcp_listen_remap,
                 passphrase_file, no_restore, allow_bad_image_version,
                 leave_stopped))?;

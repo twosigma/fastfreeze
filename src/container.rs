@@ -50,7 +50,6 @@ use crate::{
     },
     logger,
     shared_mem::SharedMem,
-    virt,
 };
 
 pub const CLONE_NEWTIME: CloneFlags = unsafe { CloneFlags::from_bits_unchecked(0x80) };
@@ -241,9 +240,6 @@ impl Privileges {
     }
 
     pub fn ensure_sufficient_privileges(&self) -> Result<()> {
-        // Check that we can enable virtualization immediately
-        virt::get_initial_virt_config(self)?;
-
         ensure!(self.can_ptrace_siblings,
             "Cannot ptrace siblings processes. CRIU won't be able to checkpoint the application. \
              Use 'echo 0 > /proc/sys/kernel/yama/ptrace_scope', or allow user namspaces");

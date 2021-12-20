@@ -83,12 +83,13 @@ def test_no_ptrace1():
         docker_image="fastfreeze-test-ff-installed", deny=deny)
 
 def test_no_ptrace2():
-    # Verify that omitting set_yama_ptrace_scope(0) does not work without user namespaces
+    # Verify that we need set_yama_ptrace_scope(0) when we have no user user namespaces
     deny={"user_namespace":"deny"}
     template_test(fails_with="Cannot ptrace siblings",
         docker_image="fastfreeze-test-ff-installed", deny=deny)
 
 def test_no_user_namespace_without_install():
+    set_yama_ptrace_scope(0)
     deny={"user_namespace":"deny"}
     template_test(fails_with="Use `fastfreeze install`", deny=deny)
 
